@@ -1,0 +1,66 @@
+{
+  "name": "identity-kit",
+  "version": "0.1.0",
+  "description": "User identity and authentication as a library — accounts, credentials and sessions, over a provider-agnostic executor.",
+  "license": "Apache-2.0",
+  "author": "BRETT",
+  "type": "module",
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+http://localhost:3003/brett/identity-kit.git"
+  },
+  "homepage": "http://localhost:3003/brett/identity-kit#readme",
+  "keywords": [
+    "authentication",
+    "identity",
+    "user-management",
+    "accounts",
+    "sessions",
+    "password",
+    "argon2",
+    "postgres",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "exports": {
+    ".": {
+      "types": {
+        "import": "./dist/index.d.ts",
+        "require": "./dist/index.d.cts"
+      },
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./sql/*": "./sql/*",
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "sql", "LICENSE", "NOTICE", "README.md"],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.0"
+  },
+  "peerDependencies": {
+    "pg": "^8.11.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": { "optional": true }
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/pg": "^8.21.0",
+    "pg": "^8.23.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,138 @@
+// The shared vocabulary: the executor, the config, the seams, and the shapes
+// that cross between them.
+//
+// The executor and clock are the same interfaces billing-kit and tenant-kit
+// use, on purpose — a `UserId` produced here is the principal those libraries
+// authorize and bill. There is no runtime code in this file, and nothing reads
+// `process.env`: a library that reads the environment cannot be instantiated
+// twice in one process, which a test suite and a multi-region worker both need.
+
+// --- database ---------------------------------------------------------------
+
+/**
+ * The whole database dependency. A bare `pg.Pool` satisfies it; Prisma is not
+ * required at runtime. Values arrive as the driver produces them — node-postgres
+ * gives TIMESTAMPTZ as a Date and TEXT as a string, which is what the queries
+ * here expect.
+ */
+export interface SqlExecutor {
+  query<T = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<T[]>;
+  /**
+   * Run `fn` in one transaction, committing on resolve and rolling back on
+   * throw. The executor handed to `fn` must be pinned to a single connection;
+   * one that hands back the pool runs the body on different connections and the
+   * rollback covers nothing.
+   */
+  transaction<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T>;
+}
+
+/** Injected so tests and token lifetimes do not depend on wall-clock drift. */
+export type Clock = () => Date;
+
+export interface Logger {
+  debug(message: string, fields?: Record<string, unknown>): void;
+  info(message: string, fields?: Record<string, unknown>): void;
+  warn(message: string, fields?: Record<string, unknown>): void;
+  error(message: string, fields?: Record<string, unknown>): void;
+}
+
+// --- identity ---------------------------------------------------------------
+
+/** Our identifier for a person. Opaque; this is the value tenant-kit's
+ *  memberships and billing-kit's subject are keyed on. */
+export type UserId = string;
+
+/**
+ * Configuration, injected — never read from the environment inside the library.
+ *
+ * The pepper is the one secret that must live with the application and never in
+ * the database: it is what keeps a stolen backup from being offline-cracked.
+ */
+export interface IdentityConfig {
+  /** HMAC-SHA-256 key peppered into every password before argon2. Keep it out of
+   *  the database and out of the backup. */
+  pepper: string;
+  /** The version stamped on hashes made with the current pepper. Rotation bumps
+   *  it, keeps the old key available, and re-peppers on next successful login. */
+  pepperVersion: number;
+  /** Base URL for the links in transactional mail (`https://app.example.com`). */
+  appUrl: string;
+  /**
+   * Whether session cookies are `Secure` and `__Host-`-prefixed. Must be true in
+   * production; false only on a plain-http dev origin, where a `__Host-` cookie
+   * would be silently refused by the browser and every login would appear to
+   * succeed and do nothing.
+   */
+  cookieSecure: boolean;
+}
+
+// --- mail (a seam) ----------------------------------------------------------
+
+/** A composed transactional message. The library writes the body — its shape is
+ *  a security property — and the host delivers it. */
+export interface Message {
+  to: string;
+  subject: string;
+  /** Plain text. Short and transactional; an HTML layer is the host's choice. */
+  body: string;
+}
+
+/**
+ * The transport seam. The library composes every message (identically on the
+ * "address exists" and "address does not" branches, which is what makes the
+ * flows enumeration-safe) and calls `send`; which relay carries it is the host's.
+ */
+export interface MailSender {
+  send(message: Message): Promise<void>;
+}
+
+// --- users and sessions -----------------------------------------------------
+
+export interface User {
+  id: UserId;
+  email: string;
+  emailDisplay: string;
+  name: string | null;
+  emailVerifiedAt: Date | null;
+  deletionRequestedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface SessionMeta {
+  ipAddress?: string | null;
+  userAgent?: string | null;
+}
+
+export interface ResolvedSession {
+  tokenHash: string;
+  userId: UserId;
+  expiresAt: Date;
+  absoluteExpiresAt: Date;
+}
+
+export interface SessionSummary {
+  tokenHash: string;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: Date;
+  lastSeenAt: Date;
+  expiresAt: Date;
+}
+
+// --- results ----------------------------------------------------------------
+
+export interface SignupInput {
+  email: string;
+  password: string;
+  name?: string;
+}
+
+export type LoginResult =
+  | { kind: 'session'; token: string; expiresAt: Date }
+  | { kind: 'failed' }
+  | { kind: 'backoff'; retryAfterSeconds: number };
+
+export type ResetResult =
+  | { kind: 'done' }
+  | { kind: 'weak_password'; message: string }
+  | { kind: 'invalid' };

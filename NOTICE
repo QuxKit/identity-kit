@@ -1,0 +1,11 @@
+identity-kit
+Copyright 2026 BRETT
+
+This product includes software developed as part of the billing-kit family.
+Licensed under the Apache License, Version 2.0.
+
+Ported from an internal auth implementation (ai_member_cloud) to a
+provider-agnostic library: the ORM was replaced with a raw-SQL executor and all
+configuration was made injectable. The security design — argon2id password
+hashing, enumeration-safe account flows, server-side revocable sessions — is
+preserved from that implementation.

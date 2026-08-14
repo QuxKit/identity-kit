@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+
+    // Permits both `./x` and `./x.ts` as specifiers; `noEmit` (set above) is its
+    // requirement. src/ uses the explicit-extension style throughout.
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src", "test", "tsup.config.ts"]
+}
