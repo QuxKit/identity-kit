@@ -21,8 +21,10 @@ describe('identity-kit/apikeys', { skip: harness === null ? SKIP_REASON : false 
     const key = keys.mint('live');
     assert.match(key, /^idk_live_[A-Z2-7]{52}_[A-Z2-7]{7}$/);
     assert.equal(keys.looksLikeKey(key), true);
-    // a tampered key fails structurally, with no database work
-    assert.equal(keys.looksLikeKey(key.slice(0, -1) + 'A'), false);
+    // a tampered key fails structurally, with no database work. Flip the last
+    // char to a guaranteed-different one, or the "tamper" is a no-op when the
+    // checksum already ends in the char we picked.
+    assert.equal(keys.looksLikeKey(key.slice(0, -1) + (key.at(-1) === 'A' ? 'B' : 'A')), false);
     assert.equal(keys.looksLikeKey('not-a-key'), false);
   });
 
