@@ -50,13 +50,27 @@
       "import": "./dist/apikeys.mjs",
       "require": "./dist/apikeys.cjs"
     },
+    "./oidc": {
+      "types": {
+        "import": "./dist/oidc.d.ts",
+        "require": "./dist/oidc.d.cts"
+      },
+      "import": "./dist/oidc.mjs",
+      "require": "./dist/oidc.cjs"
+    },
     "./sql/*": "./sql/*",
     "./package.json": "./package.json"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
-  "files": ["dist", "sql", "LICENSE", "NOTICE", "README.md"],
+  "files": [
+    "dist",
+    "sql",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
@@ -64,13 +78,16 @@
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.0",
+    "openid-client": "^6.8.5",
     "otpauth": "^9.3.0"
   },
   "peerDependencies": {
     "pg": "^8.11.0"
   },
   "peerDependenciesMeta": {
-    "pg": { "optional": true }
+    "pg": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

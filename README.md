@@ -128,13 +128,11 @@ way to "secure" — so the reasoning is in the code. The load-bearing parts:
 
 - **Mail transport** — the `MailSender` seam. The library composes every message
   (their shape is a security property); the host picks the relay.
-- **MFA and API keys** — shipped, as separate opt-in entry points, the same way
-  billing-kit splits metering from providers (see below).
-- **OAuth / SSO / SAML** — deliberately out of scope. When it lands it will be an
-  `identity-kit/oidc` module standing on a vetted protocol library
-  (`openid-client`), where identity-kit owns only the account-linking *policy*
-  (never link an unverified provider email to an existing account) — not the
-  crypto. Hand-rolling OAuth is where the takeover bugs live.
+- **MFA, API keys, and OIDC** (Google / Apple / any OpenID provider) — shipped,
+  as separate opt-in entry points, the same way billing-kit splits metering from
+  providers (see below).
+- **SAML** — still out of scope; an enterprise-only protocol better served by a
+  dedicated gateway.
 - **HTTP** — no endpoints, no framework. `login` is a function; how it is routed
   and CSRF-protected is the host's. (Cookie helpers are provided, config-driven,
   and entirely optional.)
@@ -177,12 +175,48 @@ nothing to compare in constant time); a product-specific prefix + checksum lets
 secret scanners revoke a leaked key before a customer notices. Roles/permissions
 are the host's — identity-kit only authenticates. Apply `sql/003_apikeys.sql`.
 
+### `identity-kit/oidc` — Sign in with Google / Apple
+
+```ts
+import { createOidc } from 'identity-kit/oidc';
+
+const oidc = createOidc({ db, providers: {
+  google: { issuer: 'https://accounts.google.com', clientId, clientSecret, redirectUri },
+} });
+
+// route 1: start
+const { url, state, nonce, codeVerifier } = await oidc.begin('google');
+// stash state/nonce/codeVerifier in the session; redirect to url
+
+// route 2: callback
+const { outcome } = await oidc.complete('google', req.url, { state, nonce, codeVerifier });
+if (outcome.kind === 'ok') mintSessionFor(outcome.userId);  // via the identity core
+```
+
+**The protocol is not hand-rolled** — discovery, PKCE, `state`, `nonce`, code
+exchange and ID-token validation are [`openid-client`](https://github.com/panva/openid-client)'s.
+What identity-kit owns is the one application-specific, takeover-critical
+decision: **account linking**. The rule, tested directly against crafted claims:
+
+- already linked (`provider` + `sub`) → that user;
+- a **provider-verified** email that matches a **locally-verified** account → link
+  them (both sides proved the address);
+- a matching email where **either side is unverified** → **refuse** (`conflict`) —
+  this is the takeover, and the host must have the user sign in the existing way
+  and link from settings;
+- otherwise → create a new passwordless user, verified only if the provider was.
+
+`complete` does not mint a session — OAuth stands in for the password, not the
+whole login, so the host mints the session (and decides what a new vs linked user
+gets). Apply `sql/004_oidc.sql`. SAML stays out of scope.
+
 ## Schema
 
 Everything lives in an `identity` schema so it cannot collide with a host
 application's `users` table. `sql/001_identity.sql` declares `users`, `sessions`,
-`email_verification_tokens` and `password_reset_tokens`; `002_mfa.sql` and
-`003_apikeys.sql` add the opt-in modules' tables. All cascade on delete.
+`email_verification_tokens` and `password_reset_tokens`; `002_mfa.sql`,
+`003_apikeys.sql` and `004_oidc.sql` add the opt-in modules' tables. All cascade
+on delete.
 
 ## Development
 

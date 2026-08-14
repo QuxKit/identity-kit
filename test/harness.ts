@@ -82,7 +82,7 @@ export async function setupDatabase(): Promise<Harness | null> {
     return null;
   }
   await pool.query('DROP SCHEMA IF EXISTS identity CASCADE');
-  for (const f of ['001_identity.sql', '002_mfa.sql', '003_apikeys.sql']) {
+  for (const f of ['001_identity.sql', '002_mfa.sql', '003_apikeys.sql', '004_oidc.sql']) {
     await pool.query(await readFile(fileURLToPath(new URL(`../sql/${f}`, import.meta.url)), 'utf8'));
   }
   return { db: fromPool(pool), mail: new MailCollector(), close: () => pool.end() };
