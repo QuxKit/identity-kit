@@ -34,6 +34,22 @@
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
     },
+    "./mfa": {
+      "types": {
+        "import": "./dist/mfa.d.ts",
+        "require": "./dist/mfa.d.cts"
+      },
+      "import": "./dist/mfa.mjs",
+      "require": "./dist/mfa.cjs"
+    },
+    "./apikeys": {
+      "types": {
+        "import": "./dist/apikeys.d.ts",
+        "require": "./dist/apikeys.d.cts"
+      },
+      "import": "./dist/apikeys.mjs",
+      "require": "./dist/apikeys.cjs"
+    },
     "./sql/*": "./sql/*",
     "./package.json": "./package.json"
   },
@@ -47,7 +63,8 @@
     "test": "tsx --test --test-concurrency=1 test/*.test.ts"
   },
   "dependencies": {
-    "@node-rs/argon2": "^2.0.0"
+    "@node-rs/argon2": "^2.0.0",
+    "otpauth": "^9.3.0"
   },
   "peerDependencies": {
     "pg": "^8.11.0"

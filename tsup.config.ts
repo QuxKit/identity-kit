@@ -11,7 +11,7 @@ const shared: Options = {
   bundle: true,
   // @node-rs/argon2 is a native module; keep it external, and pg is an optional
   // peer loaded by the host. Neither is bundled.
-  external: ['pg', '@node-rs/argon2'],
+  external: ['pg', '@node-rs/argon2', 'otpauth'],
   skipNodeModulesBundle: true,
   target: 'es2022',
   platform: 'node',
@@ -22,7 +22,7 @@ const shared: Options = {
 export default defineConfig([
   {
     ...shared,
-    entry: ['src/index.ts'],
+    entry: ['src/index.ts', 'src/mfa.ts', 'src/apikeys.ts'],
     format: ['esm', 'cjs'],
     dts: true,
     clean: true,

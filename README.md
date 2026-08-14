@@ -128,19 +128,61 @@ way to "secure" — so the reasoning is in the code. The load-bearing parts:
 
 - **Mail transport** — the `MailSender` seam. The library composes every message
   (their shape is a security property); the host picks the relay.
-- **OAuth / SSO / SAML, MFA, API keys** — out of the core. MFA and API keys are
-  planned as separate opt-in entry points (`identity-kit/mfa`, `.../apikeys`),
-  the same way billing-kit splits metering from providers.
+- **MFA and API keys** — shipped, as separate opt-in entry points, the same way
+  billing-kit splits metering from providers (see below).
+- **OAuth / SSO / SAML** — deliberately out of scope. When it lands it will be an
+  `identity-kit/oidc` module standing on a vetted protocol library
+  (`openid-client`), where identity-kit owns only the account-linking *policy*
+  (never link an unverified provider email to an existing account) — not the
+  crypto. Hand-rolling OAuth is where the takeover bugs live.
 - **HTTP** — no endpoints, no framework. `login` is a function; how it is routed
   and CSRF-protected is the host's. (Cookie helpers are provided, config-driven,
   and entirely optional.)
+
+## Opt-in modules
+
+Separate entry points, so an app that wants neither compiles neither.
+
+### `identity-kit/mfa` — TOTP + recovery codes
+
+```ts
+import { createMfa } from 'identity-kit/mfa';
+
+const mfa = createMfa({ db, config, mail, totp: { key: process.env.TOTP_KEY!, keyVersion: 1, issuer: 'Acme' } });
+const identity = createIdentity({ db, config, mail, secondFactor: mfa.secondFactor });
+// now login() returns { kind: 'mfa_required', pendingToken } for an enrolled user
+```
+
+The TOTP secret is **encrypted** (AES-256-GCM) under a key held outside the
+database — the one auth secret that cannot be one-way. `lastUsedStep` rejects a
+code phished in real time from being replayed in its own window; the
+pending-login state is a single-purpose table, never a half-privileged session;
+guesses are bounded (five per authentication), which is what makes six digits
+safe. Recovery codes are argon2id-hashed. Apply `sql/002_mfa.sql`.
+
+### `identity-kit/apikeys` — keys as their own principal
+
+```ts
+import { createApiKeys } from 'identity-kit/apikeys';
+
+const keys = createApiKeys({ db, prefix: 'acme' });
+const { key } = await keys.createApiKey(ownerId, { name: 'CI', scopes: ['read'] }); // shown once
+const principal = await keys.resolveApiKey(presented);  // → { ownerId, scopes } or null
+```
+
+A key belongs to an opaque `ownerId` (a user *or* a tenant — the host decides)
+and authenticates as it, never as the person who made it, so a leak is a scoped
+incident and revocation actually undoes it. Stored as a sha256 (one index probe,
+nothing to compare in constant time); a product-specific prefix + checksum lets
+secret scanners revoke a leaked key before a customer notices. Roles/permissions
+are the host's — identity-kit only authenticates. Apply `sql/003_apikeys.sql`.
 
 ## Schema
 
 Everything lives in an `identity` schema so it cannot collide with a host
 application's `users` table. `sql/001_identity.sql` declares `users`, `sessions`,
-`email_verification_tokens` and `password_reset_tokens`, with cascade-on-delete
-and the indexes the queries need.
+`email_verification_tokens` and `password_reset_tokens`; `002_mfa.sql` and
+`003_apikeys.sql` add the opt-in modules' tables. All cascade on delete.
 
 ## Development
 

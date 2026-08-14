@@ -10,7 +10,8 @@
 import { IdentityError } from './errors.ts';
 import { passwordProblem, type Credentials } from './credentials.ts';
 import type { Mailer } from './mail.ts';
-import { createSession, revokeAllSessions } from './sessions.ts';
+import { finishLogin } from './session-login.ts';
+import { revokeAllSessions } from './sessions.ts';
 import { expiresIn, issueToken, sha256 } from './tokens.ts';
 import type {
   Clock,
@@ -18,6 +19,7 @@ import type {
   LoginResult,
   Logger,
   ResetResult,
+  SecondFactor,
   SessionMeta,
   SignupInput,
   SqlExecutor,
@@ -46,6 +48,9 @@ export interface AccountsDeps {
   mailer: Mailer;
   clock: Clock;
   logger?: Logger;
+  /** Optional. When present, a correct password on an account with a confirmed
+   *  second factor returns `mfa_required` instead of a session. */
+  secondFactor?: SecondFactor;
 }
 
 export interface Accounts {
@@ -106,35 +111,6 @@ export function createAccounts(deps: AccountsDeps): Accounts {
       [hash, userId, purpose, newEmail, expiresAt],
     );
     return plaintext;
-  };
-
-  const finishLogin = async (
-    userId: UserId,
-    email: string,
-    meta: SessionMeta,
-    now: Date,
-  ): Promise<{ kind: 'session'; token: string; expiresAt: Date }> => {
-    // Checked before the session is created, or the session we are about to
-    // create is itself the prior sighting and no notification is ever sent.
-    let seenBefore = true;
-    if (meta.userAgent != null) {
-      const rows = await db.query<{ n: string }>(
-        'SELECT count(*)::text AS n FROM identity.sessions WHERE user_id = $1 AND user_agent = $2',
-        [userId, meta.userAgent],
-      );
-      seenBefore = Number(rows[0]!.n) > 0;
-    }
-
-    // A fresh identifier, always — no pre-authentication session exists for an
-    // attacker to plant, which is the cleanest immunity to fixation.
-    const session = await createSession(db, userId, meta, now);
-
-    if (!seenBefore) {
-      await mailer
-        .newDeviceSignIn(email, meta.ipAddress ?? 'an unrecognised device')
-        .catch((e) => warn(`new-device mail failed: ${String(e)}`));
-    }
-    return { kind: 'session', ...session };
   };
 
   const recordFailure = async (userId: UserId, previous: number, now: Date): Promise<void> => {
@@ -271,7 +247,15 @@ export function createAccounts(deps: AccountsDeps): Accounts {
         ]);
       }
 
-      return finishLogin(user.id, user.email, meta, now);
+      // A confirmed second factor stops here with a pending token, never a
+      // session — the intermediate state is the MFA module's single-purpose
+      // table, never a half-privileged session (see identity-kit/mfa).
+      if (deps.secondFactor) {
+        const pending = await deps.secondFactor.pendingFor(user.id, now);
+        if (pending) return { kind: 'mfa_required', pendingToken: pending };
+      }
+
+      return finishLogin(db, mailer, user.id, user.email, meta, now, deps.logger);
     },
 
     /**

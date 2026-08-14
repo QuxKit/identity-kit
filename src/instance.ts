@@ -25,6 +25,7 @@ import type {
   Logger,
   MailSender,
   ResolvedSession,
+  SecondFactor,
   SessionSummary,
   SqlExecutor,
   UserId,
@@ -37,6 +38,8 @@ export interface IdentityOptions {
   mail: MailSender;
   clock?: Clock;
   logger?: Logger;
+  /** Wire identity-kit/mfa's hook here to make login require a second factor. */
+  secondFactor?: SecondFactor;
 }
 
 export interface Identity extends Accounts {
@@ -57,7 +60,15 @@ export function createIdentity(opts: IdentityOptions): Identity {
   const clock: Clock = opts.clock ?? (() => new Date());
   const credentials = createCredentials(config);
   const mailer = createMailer(config, opts.mail);
-  const accounts = createAccounts({ db, config, credentials, mailer, clock, logger: opts.logger });
+  const accounts = createAccounts({
+    db,
+    config,
+    credentials,
+    mailer,
+    clock,
+    logger: opts.logger,
+    secondFactor: opts.secondFactor,
+  });
 
   return {
     ...accounts,

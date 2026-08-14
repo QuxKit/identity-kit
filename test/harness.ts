@@ -64,6 +64,9 @@ export const testConfig: IdentityConfig = {
   cookieSecure: true,
 };
 
+/** 32 bytes as 64 hex chars — a throwaway AES key for the MFA tests. */
+export const testTotpKey = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
+
 export interface Harness {
   db: SqlExecutor;
   mail: MailCollector;
@@ -78,9 +81,10 @@ export async function setupDatabase(): Promise<Harness | null> {
     await pool.end().catch(() => {});
     return null;
   }
-  const ddl = await readFile(fileURLToPath(new URL('../sql/001_identity.sql', import.meta.url)), 'utf8');
   await pool.query('DROP SCHEMA IF EXISTS identity CASCADE');
-  await pool.query(ddl);
+  for (const f of ['001_identity.sql', '002_mfa.sql', '003_apikeys.sql']) {
+    await pool.query(await readFile(fileURLToPath(new URL(`../sql/${f}`, import.meta.url)), 'utf8'));
+  }
   return { db: fromPool(pool), mail: new MailCollector(), close: () => pool.end() };
 }
 

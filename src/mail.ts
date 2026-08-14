@@ -18,6 +18,8 @@ export interface Mailer {
   passwordChanged(to: string): Promise<void>;
   newDeviceSignIn(to: string, where: string): Promise<void>;
   deletionRequested(to: string, token: string): Promise<void>;
+  /** Used by identity-kit/mfa when a recovery code is spent. */
+  recoveryCodeUsed(to: string, remaining: number): Promise<void>;
 }
 
 export function createMailer(config: IdentityConfig, sender: MailSender): Mailer {
@@ -102,6 +104,15 @@ export function createMailer(config: IdentityConfig, sender: MailSender): Mailer
           `Your account will be deleted in 7 days. Until then you can cancel:\n\n` +
           `${link('/cancel-deletion', token)}\n\n` +
           `If you did not request this, cancel now and change your password.`,
+      }),
+
+    recoveryCodeUsed: (to, remaining) =>
+      sender.send({
+        to,
+        subject: 'A recovery code was used on your account',
+        body:
+          `A recovery code was used to sign in. ${remaining} remain.\n\n` +
+          `If this was not you, your second factor is compromised: ${url('/settings/security')}`,
       }),
   };
 }

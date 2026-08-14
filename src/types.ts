@@ -129,8 +129,22 @@ export interface SignupInput {
 
 export type LoginResult =
   | { kind: 'session'; token: string; expiresAt: Date }
+  /** The password was correct but a confirmed second factor is required. The
+   *  pending token is redeemed by identity-kit/mfa's verifyTotp/verifyRecoveryCode.
+   *  Only ever returned when a `SecondFactor` hook is wired into the instance. */
+  | { kind: 'mfa_required'; pendingToken: string }
   | { kind: 'failed' }
   | { kind: 'backoff'; retryAfterSeconds: number };
+
+/**
+ * The hook the MFA module plugs into login. Given a user who has just passed the
+ * password check, it returns a pending-login token if that user has a confirmed
+ * second factor, or null if not. Kept as an interface so the core never imports
+ * the MFA module — an app without MFA wires nothing and login never blocks.
+ */
+export interface SecondFactor {
+  pendingFor(userId: UserId, now: Date): Promise<string | null>;
+}
 
 export type ResetResult =
   | { kind: 'done' }

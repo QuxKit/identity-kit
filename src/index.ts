@@ -35,6 +35,8 @@ export {
 export { createAccounts } from './accounts.ts';
 export type { Accounts, AccountsDeps } from './accounts.ts';
 
+export { finishLogin } from './session-login.ts';
+
 export { issueToken, sha256, expiresIn } from './tokens.ts';
 export type { IssuedToken } from './tokens.ts';
 
@@ -48,6 +50,7 @@ export type {
   MailSender,
   Message,
   ResolvedSession,
+  SecondFactor,
   SessionMeta,
   SessionSummary,
   SignupInput,
