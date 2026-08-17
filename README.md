@@ -1,6 +1,10 @@
 # @quxkit/identity-kit
 
+<img src="https://raw.githubusercontent.com/QuxKit/quxkit-brand/main/identity-kit/sizes/identity-kit-128.png" width="76" align="right" alt="">
+
 **QuxKit** · gold stone · accounts, credentials, sessions
+
+![status](https://img.shields.io/badge/status-shipped-2ea043) ![licence](https://img.shields.io/badge/licence-Apache--2.0-d6a94b) ![npm](https://img.shields.io/badge/npm-%40quxkit%2Fidentity--kit-cb3837)
 
 User identity and authentication as a library, for the app you already run.
 
