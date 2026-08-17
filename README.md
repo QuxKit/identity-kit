@@ -121,6 +121,8 @@ way to "secure" — so the reasoning is in the code. The load-bearing parts:
 - **Passwords** are argon2id (RFC 9106), peppered with an HMAC key the database
   never holds, so a stolen backup is not offline-crackable. `needsRehash`
   upgrades stored hashes on next login, so raising cost later forces no resets.
+  Rules follow NIST SP 800-63B — a length floor, no composition theatre — with
+  an optional [breached-password screen](#breached-passwords).
 - **Signup and reset are enumeration-safe.** The same response, the same work
   (argon2 runs on both branches), and an email on both branches, whether or not
   the address exists — so neither the status code nor the timing reveals who has
@@ -187,6 +189,32 @@ address + IP (`createMfa`, `createPasskeys` and `createMagic` take the same
 and `retryAfterMs`. Pass the caller's IP as `SignupInput.ipAddress` and
 `SessionMeta.ipAddress` so the keys include it. The Postgres implementation
 needs `sql/005_hardening.sql`; `sweepExpired()` prunes idle buckets.
+
+## Breached passwords
+
+```ts
+import { createIdentity, passwordBreached } from '@quxkit/identity-kit';
+
+createIdentity({ db, mail, config: { ...config, breachedPasswords: passwordBreached(fetch) } });
+// signup / resetPassword / changePassword now refuse a password seen in a breach
+```
+
+NIST SP 800-63B asks for no composition rules **and** screening against known
+breaches; `passwordProblem` was only doing the first half. `passwordBreached`
+does the second by k-anonymity: SHA-1 is computed locally, only the **first five
+hex characters** go out, the API returns every suffix in that bucket and the
+match is made in process — the password never leaves it. `fetch` is injected
+rather than imported, so it is visible in your code that this makes a network
+call, and you choose the endpoint (`endpoint`, for a self-hosted mirror), the
+timeout (`timeoutMs`, default 2500 ms) and the response padding (`padding`,
+default on).
+
+It **fails open**: an unreachable API answers "not known to be breached", because
+a third party being down must not take signup, reset and password change with it.
+`strict: true` inverts that. Screening gates *setting* a password, never
+*authenticating* with one — someone whose password appears in a breach must
+still be able to sign in to change it. `passwordProblemAsync(config, password)`
+is the whole check if you want to run it yourself.
 
 ## Session rotation
 
@@ -297,7 +325,7 @@ a property of the return types).
 
 | Code | Thrown by | Meaning |
 |---|---|---|
-| `weak_password` | signup, changePassword | fails `passwordProblem`; `reason` says why |
+| `weak_password` | signup, changePassword | fails `passwordProblem` or the breach screen; `reason` says why |
 | `bad_credentials` | changePassword, removeTotp | current password wrong |
 | `no_password` | changePassword, removeTotp | passwordless (OAuth-only) account |
 | `pepper_version` | any verify | hash made under a pepper this process does not hold; add it to `config.previousPeppers` |

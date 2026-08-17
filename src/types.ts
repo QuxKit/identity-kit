@@ -84,6 +84,13 @@ export interface IdentityConfig {
   /** How long rows in `identity.events` are kept by `sweepExpired` /
    *  `events.sweep`. Default ninety days. */
   eventRetentionMs?: number;
+  /**
+   * Optional breached-password screen, asked on signup, reset and change.
+   * `passwordBreached(fetch)` builds one (k-anonymity, injectable fetch); any
+   * function returning a count works. A non-zero count is a `weak_password`
+   * failure. Omitted, no screening happens and nothing is fetched.
+   */
+  breachedPasswords?: (password: string) => Promise<number>;
 }
 
 // --- mail (a seam) ----------------------------------------------------------

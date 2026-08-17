@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Breached-password screening (opt-in)** — `passwordBreached(fetch, { endpoint?,
+  strict?, padding?, timeoutMs? })` implements the k-anonymity range API (SHA-1
+  computed locally, five hex characters sent, suffixes matched in process) and is
+  wired in through `config.breachedPasswords`; `signup`, `resetPassword` and
+  `changePassword` then refuse a breached password as `weak_password`. Fails open
+  unless `strict`. New `passwordProblemAsync(config, password)`; `passwordProblem`
+  is unchanged for the local rules.
+
 - `oidc`: provider flags `allowInsecureRequests` (loopback-only `http://`, for a
   local Keycloak / Dex; anything else is `invalid_config`) and
   `verifyIdTokenSignature` (JWS validation against the provider's JWKS — off by

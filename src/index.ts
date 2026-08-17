@@ -11,8 +11,10 @@
 
 export type { Accounts, AccountsDeps, PasswordChanged } from './accounts.ts';
 export { createAccounts } from './accounts.ts';
+export type { BreachedPasswordCheck, BreachedPasswordOptions, FetchLike } from './breached.ts';
+export { passwordBreached } from './breached.ts';
 export type { Credentials } from './credentials.ts';
-export { createCredentials, PARAMS, passwordProblem } from './credentials.ts';
+export { createCredentials, PARAMS, passwordProblem, passwordProblemAsync } from './credentials.ts';
 export type { IdentityErrorCode, IdentityFailure } from './errors.ts';
 export { IdentityError } from './errors.ts';
 export type { Events, ListEventsOptions, RecordEventInput, SecurityEvent, SecurityEventKind } from './events.ts';

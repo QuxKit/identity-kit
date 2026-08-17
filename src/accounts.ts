@@ -7,7 +7,7 @@
 // oracle closed on login, tokens burned on any use, backoff that is not a
 // denial-of-service against the victim.
 
-import { type Credentials, passwordProblem } from './credentials.ts';
+import { type Credentials, passwordProblemAsync } from './credentials.ts';
 import { IdentityError } from './errors.ts';
 import { deleteEventsFor, recordEvent } from './events.ts';
 import type { Mailer } from './mail.ts';
@@ -186,7 +186,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
      * against a fixed dummy instead, which is what keeps the timing equal.
      */
     async signup(input) {
-      const problem = passwordProblem(input.password);
+      const problem = await passwordProblemAsync(config, input.password);
       if (problem) throw new IdentityError({ code: 'weak_password', reason: problem });
 
       const email = normaliseEmail(input.email);
@@ -375,7 +375,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
         await tx.query('DELETE FROM identity.password_reset_tokens WHERE user_id = $1', [row.user_id]);
         if (row.expires_at <= now) return { kind: 'invalid' };
 
-        const problem = passwordProblem(newPassword);
+        const problem = await passwordProblemAsync(config, newPassword);
         if (problem) return { kind: 'weak', message: problem };
 
         const passwordHash = await credentials.hashPassword(newPassword);
@@ -406,7 +406,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
      * the identifier is renewed and `authenticatedAt` is refreshed).
      */
     async changePassword(userId, current, next, keepSessionHash, now = clock(), meta = {}) {
-      const problem = passwordProblem(next);
+      const problem = await passwordProblemAsync(config, next);
       if (problem) throw new IdentityError({ code: 'weak_password', reason: problem });
 
       const rows = await db.query<{ email: string; password_hash: string | null; pepper_version: number }>(
