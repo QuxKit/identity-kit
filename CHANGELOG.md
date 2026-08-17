@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`@quxkit/identity-kit/http`** — `routes({ identity, config, mfa?, apiKeys?,
+  magic?, passkeys?, basePath?, csrf? })`: framework-neutral handlers
+  (`{ method, path, headers, body, ip }` → `{ status, headers, body }`, `null`
+  to fall through) for signup, verify, resend, login, logout, session, csrf,
+  password reset request/confirm, password change, MFA begin/confirm/verify/
+  remove, API-key create/list/revoke, magic request/consume and passkey
+  register/authenticate/list/remove. Session cookies (including rotation) and
+  `Authorization: Bearer` handled; `IdentityError` → status codes with the
+  limiter key stripped. CSRF double-submit helper (`createCsrf`, `GET /csrf`,
+  `csrf: true`). Adapters `nodeListener` (with `trustProxy`, a 413 body cap),
+  `expressHandler`, `honoHandler`, typed against local interfaces — no
+  framework dependency.
+
 - **`@quxkit/identity-kit/magic`** — passwordless sign-in: `request({ email,
   ipAddress })` (enumeration-safe, rate-limit action `magic_link` 5/hour, one
   live token per user, 15-minute TTL, sha256 at rest, verified accounts only)

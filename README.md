@@ -160,9 +160,10 @@ way to "secure" — so the reasoning is in the code. The load-bearing parts:
   providers (see below).
 - **SAML** — still out of scope; an enterprise-only protocol better served by a
   dedicated gateway.
-- **HTTP** — no endpoints, no framework. `login` is a function; how it is routed
-  and CSRF-protected is the host's. (Cookie helpers are provided, config-driven,
-  and entirely optional.)
+- **HTTP** — the core is functions, not endpoints. If you want the endpoints,
+  `identity-kit/http` ships them framework-neutrally with adapters for
+  `node:http`, Express and Hono; see [Mount it](#mount-it). Routing, TLS and the
+  server are still the host's.
 
 ## Rate limiting
 
@@ -203,6 +204,50 @@ user, expiry, metadata) and kills the old one at once. With
 rotate it (they used to revoke everything). The flag defaults to off so a host
 that ignores the return values keeps working; turn it on once yours re-sets the
 cookie.
+
+## Mount it
+
+```ts
+import { routes, nodeListener } from '@quxkit/identity-kit/http';   // also: expressHandler, honoHandler
+
+const auth = routes({ identity, config, mfa, apiKeys, magic, passkeys, basePath: '/auth', csrf: true });
+
+// node:http
+const listener = nodeListener(auth, { trustProxy: true });
+http.createServer(async (req, res) => { if (await listener(req, res)) return; myApp(req, res); });
+
+// Express (after express.json())     // Hono
+app.use(expressHandler(auth));        // app.all('/auth/*', honoHandler(auth));
+```
+
+`routes()` returns `handle(req) -> res | null`, over plain shapes — `{ method,
+path, headers, body, ip }` in, `{ status, headers, body }` out — so no framework
+is imported and a host on something else writes ten lines. `null` means "not one
+of mine": fall through. Endpoints (under `basePath`):
+
+| | |
+|---|---|
+| `POST /signup` · `POST /verify` · `POST /verify/resend` | account |
+| `POST /login` · `POST /logout` · `GET /session` · `GET /csrf` | session |
+| `POST /password/reset/request` · `/password/reset/confirm` · `/password/change` | passwords |
+| `POST /mfa/begin` · `/mfa/confirm` · `/mfa/verify` · `/mfa/remove` | with `mfa` |
+| `GET|POST /apikeys` · `DELETE /apikeys/:id` | with `apiKeys` |
+| `POST /magic/request` · `/magic/consume` | with `magic` |
+| `POST /passkeys/register/begin|finish` · `GET /passkeys` · `DELETE /passkeys/:id` · `POST /passkeys/authenticate/begin|finish` | with `passkeys` |
+
+Only the modules you pass are mounted; the rest of the paths stay unclaimed.
+The session cookie is set and cleared for you (a rotated session comes back as a
+new `Set-Cookie` automatically), and `Authorization: Bearer <session token>` is
+accepted for SPAs that hold the token themselves. `IdentityError`s become status
+codes — `rate_limited` → 429 with `Retry-After`, `reauth_required` → 401,
+`bad_credentials` → 403, `weak_password` → 400 — with the limiter key stripped,
+since it can carry an email. Anything else propagates to your error handler.
+
+**CSRF** is a double-submit token: `GET /csrf` sets a readable
+`__Host-csrf` cookie and returns the same value to echo as `x-csrf-token` (or
+`_csrf` in the body). `csrf: true` requires it on every non-GET; it is off by
+default because `SameSite=Lax` already blocks cross-site POST. `createCsrf(config)`
+is exported for hosts that route themselves.
 
 ## Security events
 
