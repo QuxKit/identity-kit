@@ -29,6 +29,7 @@ export default defineConfig([
       'src/oidc.ts',
       'src/passkeys.ts',
       'src/magic.ts',
+      'src/http.ts',
       'src/pg.ts',
     ],
     format: ['esm', 'cjs'],

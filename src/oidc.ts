@@ -36,6 +36,25 @@ export interface OidcProvider {
   /** Defaults to `openid email profile`. `email` is required — this schema cannot
    *  create a user without one. */
   scopes?: readonly string[];
+  /**
+   * Permit `http://` for this provider. **Loopback only** — a non-loopback
+   * issuer is refused with `invalid_config` — because plain http to a real
+   * provider puts the authorization code and the ID token on the wire. It
+   * exists for a local Keycloak / Dex in development and for the in-process
+   * issuer the tests drive; never set it in production.
+   */
+  allowInsecureRequests?: boolean;
+  /**
+   * Verify the ID token's JWS signature against the provider's JWKS.
+   *
+   * Off by default, and that is the specification's position, not laziness: in
+   * the code flow the ID token arrives over a direct TLS connection to the token
+   * endpoint, so TLS server authentication already establishes who sent it
+   * (OpenID Connect Core 3.1.3.7). Turn it on for non-repudiation. It is forced
+   * on when `allowInsecureRequests` is set, because there is then no TLS doing
+   * that job.
+   */
+  verifyIdTokenSignature?: boolean;
 }
 
 export interface OidcOptions {
@@ -85,11 +104,30 @@ export function createOidc(opts: OidcOptions): Oidc {
     return p;
   };
 
+  const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
   const discover = (name: string): Promise<oauth.Configuration> => {
     let c = configs.get(name);
     if (!c) {
       const p = providerConfig(name);
-      c = oauth.discovery(new URL(p.issuer), p.clientId, p.clientSecret);
+      const issuerUrl = new URL(p.issuer);
+      if (p.allowInsecureRequests && !LOOPBACK.has(issuerUrl.hostname)) {
+        throw new IdentityError({
+          code: 'invalid_config',
+          reason: `oidc: allowInsecureRequests is loopback-only; ${issuerUrl.hostname} is not localhost`,
+        });
+      }
+      const execute: ((config: oauth.Configuration) => void)[] = [];
+      if (p.allowInsecureRequests) execute.push(oauth.allowInsecureRequests);
+      // No TLS means no TLS-authenticated issuer, so the signature is the only
+      // thing left that says who minted the token.
+      if (p.verifyIdTokenSignature || p.allowInsecureRequests) execute.push(oauth.enableNonRepudiationChecks);
+      c = oauth.discovery(issuerUrl, p.clientId, p.clientSecret, undefined, { execute }).then((config) => {
+        // `execute` runs against the discovery request; the token exchange needs
+        // the same flags set on the Configuration it later uses.
+        for (const apply of execute) apply(config);
+        return config;
+      });
       configs.set(name, c);
     }
     return c;

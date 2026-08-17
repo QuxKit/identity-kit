@@ -76,6 +76,14 @@
       "import": "./dist/magic.mjs",
       "require": "./dist/magic.cjs"
     },
+    "./http": {
+      "types": {
+        "import": "./dist/http.d.ts",
+        "require": "./dist/http.d.cts"
+      },
+      "import": "./dist/http.mjs",
+      "require": "./dist/http.cjs"
+    },
     "./pg": {
       "types": {
         "import": "./dist/pg.d.ts",

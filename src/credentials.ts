@@ -53,6 +53,24 @@ export const passwordProblem = (password: string): string | null => {
   return null;
 };
 
+/**
+ * The full check: the length floor, then — when `config.breachedPasswords` is
+ * wired — the breach screen. Async because the screen may be a network call;
+ * the synchronous `passwordProblem` stays exported for callers that only want
+ * the local rules.
+ *
+ * The message names the reason without naming the count, because "seen 4.2
+ * million times" is a number people take as a challenge rather than a warning,
+ * and it says nothing actionable beyond "choose another".
+ */
+export async function passwordProblemAsync(config: IdentityConfig, password: string): Promise<string | null> {
+  const local = passwordProblem(password);
+  if (local) return local;
+  if (!config.breachedPasswords) return null;
+  const count = await config.breachedPasswords(password);
+  return count > 0 ? 'This password has appeared in a public data breach. Please choose a different one.' : null;
+}
+
 export function createCredentials(config: IdentityConfig): Credentials {
   /**
    * Pepper, then hash.

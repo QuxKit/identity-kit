@@ -8,6 +8,36 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Breached-password screening (opt-in)** — `passwordBreached(fetch, { endpoint?,
+  strict?, padding?, timeoutMs? })` implements the k-anonymity range API (SHA-1
+  computed locally, five hex characters sent, suffixes matched in process) and is
+  wired in through `config.breachedPasswords`; `signup`, `resetPassword` and
+  `changePassword` then refuse a breached password as `weak_password`. Fails open
+  unless `strict`. New `passwordProblemAsync(config, password)`; `passwordProblem`
+  is unchanged for the local rules.
+
+- `oidc`: provider flags `allowInsecureRequests` (loopback-only `http://`, for a
+  local Keycloak / Dex; anything else is `invalid_config`) and
+  `verifyIdTokenSignature` (JWS validation against the provider's JWKS — off by
+  default per OIDC Core 3.1.3.7, forced on when `allowInsecureRequests` is set).
+  `oidc.begin` / `complete` are now exercised end to end against an in-process
+  mock issuer (`test/mock-issuer.ts`, RS256 via `node:crypto`, no new
+  dependency), including PKCE / state / nonce mismatches, a wrong signing key,
+  a missing nonce claim and the account-takeover refusal.
+
+- **`@quxkit/identity-kit/http`** — `routes({ identity, config, mfa?, apiKeys?,
+  magic?, passkeys?, basePath?, csrf? })`: framework-neutral handlers
+  (`{ method, path, headers, body, ip }` → `{ status, headers, body }`, `null`
+  to fall through) for signup, verify, resend, login, logout, session, csrf,
+  password reset request/confirm, password change, MFA begin/confirm/verify/
+  remove, API-key create/list/revoke, magic request/consume and passkey
+  register/authenticate/list/remove. Session cookies (including rotation) and
+  `Authorization: Bearer` handled; `IdentityError` → status codes with the
+  limiter key stripped. CSRF double-submit helper (`createCsrf`, `GET /csrf`,
+  `csrf: true`). Adapters `nodeListener` (with `trustProxy`, a 413 body cap),
+  `expressHandler`, `honoHandler`, typed against local interfaces — no
+  framework dependency.
+
 - **`@quxkit/identity-kit/magic`** — passwordless sign-in: `request({ email,
   ipAddress })` (enumeration-safe, rate-limit action `magic_link` 5/hour, one
   live token per user, 15-minute TTL, sha256 at rest, verified accounts only)

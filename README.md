@@ -121,6 +121,8 @@ way to "secure" — so the reasoning is in the code. The load-bearing parts:
 - **Passwords** are argon2id (RFC 9106), peppered with an HMAC key the database
   never holds, so a stolen backup is not offline-crackable. `needsRehash`
   upgrades stored hashes on next login, so raising cost later forces no resets.
+  Rules follow NIST SP 800-63B — a length floor, no composition theatre — with
+  an optional [breached-password screen](#breached-passwords).
 - **Signup and reset are enumeration-safe.** The same response, the same work
   (argon2 runs on both branches), and an email on both branches, whether or not
   the address exists — so neither the status code nor the timing reveals who has
@@ -160,9 +162,10 @@ way to "secure" — so the reasoning is in the code. The load-bearing parts:
   providers (see below).
 - **SAML** — still out of scope; an enterprise-only protocol better served by a
   dedicated gateway.
-- **HTTP** — no endpoints, no framework. `login` is a function; how it is routed
-  and CSRF-protected is the host's. (Cookie helpers are provided, config-driven,
-  and entirely optional.)
+- **HTTP** — the core is functions, not endpoints. If you want the endpoints,
+  `identity-kit/http` ships them framework-neutrally with adapters for
+  `node:http`, Express and Hono; see [Mount it](#mount-it). Routing, TLS and the
+  server are still the host's.
 
 ## Rate limiting
 
@@ -187,6 +190,32 @@ and `retryAfterMs`. Pass the caller's IP as `SignupInput.ipAddress` and
 `SessionMeta.ipAddress` so the keys include it. The Postgres implementation
 needs `sql/005_hardening.sql`; `sweepExpired()` prunes idle buckets.
 
+## Breached passwords
+
+```ts
+import { createIdentity, passwordBreached } from '@quxkit/identity-kit';
+
+createIdentity({ db, mail, config: { ...config, breachedPasswords: passwordBreached(fetch) } });
+// signup / resetPassword / changePassword now refuse a password seen in a breach
+```
+
+NIST SP 800-63B asks for no composition rules **and** screening against known
+breaches; `passwordProblem` was only doing the first half. `passwordBreached`
+does the second by k-anonymity: SHA-1 is computed locally, only the **first five
+hex characters** go out, the API returns every suffix in that bucket and the
+match is made in process — the password never leaves it. `fetch` is injected
+rather than imported, so it is visible in your code that this makes a network
+call, and you choose the endpoint (`endpoint`, for a self-hosted mirror), the
+timeout (`timeoutMs`, default 2500 ms) and the response padding (`padding`,
+default on).
+
+It **fails open**: an unreachable API answers "not known to be breached", because
+a third party being down must not take signup, reset and password change with it.
+`strict: true` inverts that. Screening gates *setting* a password, never
+*authenticating* with one — someone whose password appears in a breach must
+still be able to sign in to change it. `passwordProblemAsync(config, password)`
+is the whole check if you want to run it yourself.
+
 ## Session rotation
 
 `identity.rotateSession(token)` returns a new token for the same session (same
@@ -203,6 +232,50 @@ user, expiry, metadata) and kills the old one at once. With
 rotate it (they used to revoke everything). The flag defaults to off so a host
 that ignores the return values keeps working; turn it on once yours re-sets the
 cookie.
+
+## Mount it
+
+```ts
+import { routes, nodeListener } from '@quxkit/identity-kit/http';   // also: expressHandler, honoHandler
+
+const auth = routes({ identity, config, mfa, apiKeys, magic, passkeys, basePath: '/auth', csrf: true });
+
+// node:http
+const listener = nodeListener(auth, { trustProxy: true });
+http.createServer(async (req, res) => { if (await listener(req, res)) return; myApp(req, res); });
+
+// Express (after express.json())     // Hono
+app.use(expressHandler(auth));        // app.all('/auth/*', honoHandler(auth));
+```
+
+`routes()` returns `handle(req) -> res | null`, over plain shapes — `{ method,
+path, headers, body, ip }` in, `{ status, headers, body }` out — so no framework
+is imported and a host on something else writes ten lines. `null` means "not one
+of mine": fall through. Endpoints (under `basePath`):
+
+| | |
+|---|---|
+| `POST /signup` · `POST /verify` · `POST /verify/resend` | account |
+| `POST /login` · `POST /logout` · `GET /session` · `GET /csrf` | session |
+| `POST /password/reset/request` · `/password/reset/confirm` · `/password/change` | passwords |
+| `POST /mfa/begin` · `/mfa/confirm` · `/mfa/verify` · `/mfa/remove` | with `mfa` |
+| `GET|POST /apikeys` · `DELETE /apikeys/:id` | with `apiKeys` |
+| `POST /magic/request` · `/magic/consume` | with `magic` |
+| `POST /passkeys/register/begin|finish` · `GET /passkeys` · `DELETE /passkeys/:id` · `POST /passkeys/authenticate/begin|finish` | with `passkeys` |
+
+Only the modules you pass are mounted; the rest of the paths stay unclaimed.
+The session cookie is set and cleared for you (a rotated session comes back as a
+new `Set-Cookie` automatically), and `Authorization: Bearer <session token>` is
+accepted for SPAs that hold the token themselves. `IdentityError`s become status
+codes — `rate_limited` → 429 with `Retry-After`, `reauth_required` → 401,
+`bad_credentials` → 403, `weak_password` → 400 — with the limiter key stripped,
+since it can carry an email. Anything else propagates to your error handler.
+
+**CSRF** is a double-submit token: `GET /csrf` sets a readable
+`__Host-csrf` cookie and returns the same value to echo as `x-csrf-token` (or
+`_csrf` in the body). `csrf: true` requires it on every non-GET; it is off by
+default because `SameSite=Lax` already blocks cross-site POST. `createCsrf(config)`
+is exported for hosts that route themselves.
 
 ## Security events
 
@@ -252,7 +325,7 @@ a property of the return types).
 
 | Code | Thrown by | Meaning |
 |---|---|---|
-| `weak_password` | signup, changePassword | fails `passwordProblem`; `reason` says why |
+| `weak_password` | signup, changePassword | fails `passwordProblem` or the breach screen; `reason` says why |
 | `bad_credentials` | changePassword, removeTotp | current password wrong |
 | `no_password` | changePassword, removeTotp | passwordless (OAuth-only) account |
 | `pepper_version` | any verify | hash made under a pepper this process does not hold; add it to `config.previousPeppers` |
@@ -407,6 +480,17 @@ decision: **account linking**. The rule, tested directly against crafted claims:
 `complete` does not mint a session — OAuth stands in for the password, not the
 whole login, so the host mints the session (and decides what a new vs linked user
 gets). Apply `sql/004_oidc.sql`. SAML stays out of scope.
+
+Two provider flags exist for the awkward cases. `allowInsecureRequests` permits
+`http://` and is **loopback-only** (anything else is `invalid_config`), for a
+local Keycloak or Dex in development. `verifyIdTokenSignature` checks the ID
+token's JWS against the provider's JWKS; it is off by default because in the code
+flow the token arrives over a direct TLS connection to the token endpoint, which
+is what authenticates the issuer (OIDC Core 3.1.3.7) — and it is forced on
+whenever `allowInsecureRequests` is set, since there is then no TLS doing that
+job. The whole flow is exercised end to end in the tests against an in-process
+issuer (`test/mock-issuer.ts`: discovery, JWKS, authorize, token; RS256 via
+`node:crypto`, no extra dependency).
 
 ## Schema
 
