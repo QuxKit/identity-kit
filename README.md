@@ -27,7 +27,7 @@ User identity and authentication as a library, for the app you already run.
 
 _Rendered diagrams (mermaid): [docs/DIAGRAMS.md](https://github.com/QuxKit/identity-kit/blob/main/docs/DIAGRAMS.md)._
 
-identity-kit owns the teal boxes: what a user **is**, how they **prove it**
+identity-kit owns the framed box: what a user **is**, how they **prove it**
 (argon2id credentials, server-side sessions), and the account lifecycle around
 that — signup, email verification, password reset, deletion. It produces a
 `UserId` and stops there. Your app owns the database it writes to (through a
