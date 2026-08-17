@@ -36,7 +36,17 @@ export type IdentityFailure =
   /** oidc: no provider registered under that name. */
   | { code: 'unknown_provider'; provider: string }
   /** oidc: the token response carried no ID token. */
-  | { code: 'no_id_token' };
+  | { code: 'no_id_token' }
+  /** passkeys: the challenge in the response is unknown, spent, expired, for
+   *  another purpose, or was issued to another user. */
+  | { code: 'invalid_challenge'; reason: 'unknown' | 'expired' | 'purpose' | 'user' }
+  /** passkeys: the authenticator response did not verify (origin, rp id,
+   *  signature, user verification, or an already-registered credential). */
+  | { code: 'passkey_verification_failed'; reason: string }
+  /** passkeys: the signature counter went backwards — a cloned authenticator,
+   *  or a replayed assertion. The credential is left in place for the host to
+   *  decide; the login is refused. */
+  | { code: 'passkey_counter_regression'; credentialId: string; stored: number; presented: number };
 
 export type IdentityErrorCode = IdentityFailure['code'];
 
@@ -74,6 +84,15 @@ function describe(failure: IdentityFailure): string {
       return `oidc: unknown provider ${failure.provider}`;
     case 'no_id_token':
       return 'oidc: the token response carried no ID token';
+    case 'invalid_challenge':
+      return `passkeys: challenge ${failure.reason}`;
+    case 'passkey_verification_failed':
+      return `passkeys: ${failure.reason}`;
+    case 'passkey_counter_regression':
+      return (
+        `passkeys: credential ${failure.credentialId} presented counter ${failure.presented} <= stored ` +
+        `${failure.stored}; possible cloned authenticator`
+      );
   }
 }
 

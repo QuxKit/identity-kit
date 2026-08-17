@@ -91,6 +91,7 @@ export async function setupDatabase(): Promise<Harness | null> {
     '004_oidc.sql',
     '005_hardening.sql',
     '006_events.sql',
+    '007_passkeys.sql',
   ]) {
     await pool.query(await readFile(fileURLToPath(new URL(`../sql/${f}`, import.meta.url)), 'utf8'));
   }

@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`@quxkit/identity-kit/passkeys`** — WebAuthn over `@simplewebauthn/server`
+  (a runtime dependency of this subpath; external in the build):
+  `registerBegin` (recent-auth `EnrolmentProof`, shared with MFA via the new
+  `reauth.ts`) / `registerFinish`, `authenticateBegin` (named user or
+  discoverable) / `authenticateFinish` (through `finishLogin`, `via:
+  'passkey'`), `list` / `rename` / `remove`, `sweepChallenges`. Tables
+  `identity.passkeys` and `identity.webauthn_challenges`
+  (`sql/007_passkeys.sql`); challenges are sha256 at rest with a TTL and spent
+  on use. Typed errors `invalid_challenge`, `passkey_verification_failed`,
+  `passkey_counter_regression`; rate-limit action `passkey_auth` (20/min per
+  ip); `SweepReport.webauthnChallenges`. Events `passkey_registered` /
+  `passkey_removed`. Tests drive a software authenticator (`test/soft-authenticator.ts`).
+
 - **Security-events log** — `identity.events` (`sql/006_events.sql`,
   **required**): `login_succeeded` / `login_failed` (with a reason),
   `password_changed` / `password_reset`, `session_revoked`, `mfa_enrolled` /

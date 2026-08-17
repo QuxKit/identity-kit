@@ -29,7 +29,13 @@ export interface RateLimitRule {
   windowMs: number;
 }
 
-export type RateLimitAction = 'signup' | 'login' | 'password_reset' | 'verification_resend' | 'mfa_verify';
+export type RateLimitAction =
+  | 'signup'
+  | 'login'
+  | 'password_reset'
+  | 'verification_resend'
+  | 'mfa_verify'
+  | 'passkey_auth';
 
 export type RateLimitRules = Record<RateLimitAction | 'default', RateLimitRule>;
 
@@ -47,6 +53,7 @@ export const DEFAULT_RATE_LIMITS: RateLimitRules = {
   password_reset: { limit: 5, windowMs: HOUR },
   verification_resend: { limit: 5, windowMs: HOUR },
   mfa_verify: { limit: 10, windowMs: MINUTE },
+  passkey_auth: { limit: 20, windowMs: MINUTE },
   default: { limit: 60, windowMs: MINUTE },
 };
 
