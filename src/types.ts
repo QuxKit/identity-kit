@@ -64,6 +64,18 @@ export interface IdentityConfig {
    * succeed and do nothing.
    */
   cookieSecure: boolean;
+  /**
+   * Rotate the session identifier on sliding renewal and after a password or
+   * MFA change on the current session. When on, `resolveSession` may return a
+   * `rotated` token the host MUST set as the new cookie, and `changePassword`
+   * returns the rotated session for the kept token. Off by default so hosts that
+   * ignore the return values keep working; turn it on once yours re-sets the
+   * cookie.
+   */
+  rotateSessions?: boolean;
+  /** How recent a session's credential proof must be for MFA enrolment via a
+   *  session token. Default ten minutes. */
+  reauthWindowMs?: number;
 }
 
 // --- mail (a seam) ----------------------------------------------------------
@@ -108,6 +120,12 @@ export interface ResolvedSession {
   userId: UserId;
   expiresAt: Date;
   absoluteExpiresAt: Date;
+  /** When the holder last proved a credential on this session. */
+  authenticatedAt: Date;
+  /** Present only when `rotateSessions` is on and this read renewed the session:
+   *  the token was rotated and the host must set `rotated.token` as the cookie.
+   *  `tokenHash` above is already the new hash. */
+  rotated?: { token: string; expiresAt: Date };
 }
 
 export interface SessionSummary {
@@ -125,6 +143,8 @@ export interface SignupInput {
   email: string;
   password: string;
   name?: string;
+  /** The caller's IP, if the host has it — used only as a rate-limit key. */
+  ipAddress?: string | null;
 }
 
 export type LoginResult =

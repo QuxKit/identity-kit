@@ -9,7 +9,7 @@
 // `createIdentity` binds an executor, config and mail transport over the free
 // functions below. Nothing here reads the environment.
 
-export type { Accounts, AccountsDeps } from './accounts.ts';
+export type { Accounts, AccountsDeps, PasswordChanged } from './accounts.ts';
 export { createAccounts } from './accounts.ts';
 export type { Credentials } from './credentials.ts';
 export { createCredentials, PARAMS, passwordProblem } from './credentials.ts';
@@ -19,7 +19,16 @@ export type { Identity, IdentityOptions } from './instance.ts';
 export { createIdentity } from './instance.ts';
 export type { Mailer } from './mail.ts';
 export { createMailer } from './mail.ts';
+export type {
+  RateLimitAction,
+  RateLimitDecision,
+  RateLimiter,
+  RateLimitRule,
+  RateLimitRules,
+} from './ratelimit.ts';
+export { createMemoryRateLimiter, createPgRateLimiter, DEFAULT_RATE_LIMITS, limiterKey } from './ratelimit.ts';
 export { finishLogin } from './session-login.ts';
+export type { ResolveOptions, SweepReport } from './sessions.ts';
 export {
   ABSOLUTE_LIFETIME_MS,
   clearedSessionCookie,
@@ -30,7 +39,9 @@ export {
   resolveSession,
   revokeAllSessions,
   revokeSession,
+  rotateSession,
   sessionCookie,
+  sweepExpired,
   sweepExpiredSessions,
 } from './sessions.ts';
 export type { IssuedToken } from './tokens.ts';

@@ -10,8 +10,9 @@
 import { type Credentials, passwordProblem } from './credentials.ts';
 import { IdentityError } from './errors.ts';
 import type { Mailer } from './mail.ts';
+import { limiterKey, type RateLimiter } from './ratelimit.ts';
 import { finishLogin } from './session-login.ts';
-import { revokeAllSessions } from './sessions.ts';
+import { revokeAllSessions, rotateSession } from './sessions.ts';
 import { expiresIn, issueToken, sha256 } from './tokens.ts';
 import type {
   Clock,
@@ -51,15 +52,34 @@ export interface AccountsDeps {
   /** Optional. When present, a correct password on an account with a confirmed
    *  second factor returns `mfa_required` instead of a session. */
   secondFactor?: SecondFactor;
+  /** Asked before signup, login, reset request and verification resend. `null`
+   *  disables limiting (createIdentity supplies the Postgres one by default). */
+  rateLimiter?: RateLimiter | null;
+}
+
+/** What `changePassword` reports. `rotated` is present only when
+ *  `config.rotateSessions` is on and a `keepSessionHash` was given: that
+ *  session now has a new token the host must set as the cookie. */
+export interface PasswordChanged {
+  rotated?: { token: string; tokenHash: string; expiresAt: Date };
 }
 
 export interface Accounts {
   signup(input: SignupInput): Promise<{ accepted: true }>;
   verifyEmail(token: string, now?: Date): Promise<boolean>;
   login(input: { email: string; password: string }, meta?: SessionMeta, now?: Date): Promise<LoginResult>;
-  requestPasswordReset(email: string): Promise<{ accepted: true }>;
+  /** Re-send the verification link to an address whose account is unverified.
+   *  Enumeration-safe: accepted either way, mail only to the address itself. */
+  resendVerification(email: string, meta?: SessionMeta): Promise<{ accepted: true }>;
+  requestPasswordReset(email: string, meta?: SessionMeta): Promise<{ accepted: true }>;
   resetPassword(token: string, newPassword: string, now?: Date): Promise<ResetResult>;
-  changePassword(userId: UserId, current: string, next: string, keepSessionHash?: string): Promise<void>;
+  changePassword(
+    userId: UserId,
+    current: string,
+    next: string,
+    keepSessionHash?: string,
+    now?: Date,
+  ): Promise<PasswordChanged>;
   requestDeletion(userId: UserId, now?: Date): Promise<void>;
   cancelDeletion(token: string, now?: Date): Promise<boolean>;
   purgeUnverified(now?: Date): Promise<number>;
@@ -113,16 +133,36 @@ export function createAccounts(deps: AccountsDeps): Accounts {
     return plaintext;
   };
 
-  const recordFailure = async (userId: UserId, previous: number, now: Date): Promise<void> => {
-    const failedLogins = previous + 1;
+  /**
+   * Refuse when the limiter says so. Runs before any database or argon2 work on
+   * the paths it guards, so a limited request costs the server nothing.
+   */
+  const limit = async (key: string): Promise<void> => {
+    if (!deps.rateLimiter) return;
+    const decision = await deps.rateLimiter.hit(key);
+    if (!decision.allowed) throw new IdentityError({ code: 'rate_limited', retryAfterMs: decision.retryAfterMs, key });
+  };
+
+  // Incremented in place and read back, never read-then-written: two wrong
+  // passwords arriving together must both count, or backoff can be held off
+  // indefinitely by keeping the requests concurrent.
+  const recordFailure = async (userId: UserId, now: Date): Promise<void> => {
+    const rows = await db.query<{ failed_logins: number }>(
+      `UPDATE identity.users SET failed_logins = failed_logins + 1, last_failed_at = $2
+        WHERE id = $1 RETURNING failed_logins`,
+      [userId, now],
+    );
+    const failedLogins = rows[0]?.failed_logins ?? 0;
     const overshoot = failedLogins - BACKOFF_AFTER;
-    const lockedUntil =
-      overshoot >= 0 ? new Date(now.getTime() + Math.min(1000 * 2 ** overshoot, BACKOFF_CAP_MS)) : null;
-    await db.query('UPDATE identity.users SET failed_logins = $2, locked_until = $3 WHERE id = $1', [
-      userId,
-      failedLogins,
-      lockedUntil,
-    ]);
+    if (overshoot < 0) return;
+    const lockedUntil = new Date(now.getTime() + Math.min(1000 * 2 ** overshoot, BACKOFF_CAP_MS));
+    // Only ever push the lock later, so a slower concurrent failure cannot pull
+    // an already-longer lock back in.
+    await db.query(
+      `UPDATE identity.users SET locked_until = GREATEST(COALESCE(locked_until, $2), $2)
+        WHERE id = $1`,
+      [userId, lockedUntil],
+    );
   };
 
   const clearFailures = (userId: UserId) =>
@@ -132,25 +172,30 @@ export function createAccounts(deps: AccountsDeps): Accounts {
     /**
      * Sign up, without telling the caller whether the address was taken. A
      * `409 already registered` turns this into an oracle for who has an account;
-     * timing does the same if only one path runs argon2. So the password is
-     * hashed on both paths, an email is sent on both paths, and the return value
-     * is identical on both paths.
+     * timing does the same if only one path runs argon2. So argon2 runs once on
+     * both paths, an email is sent on both paths, and the return value is
+     * identical on both paths.
+     *
+     * The limiter and the existing-address lookup come BEFORE any hashing, so a
+     * limited request costs nothing and the taken-address path never hashes a
+     * password it will not store — it burns the same work as a verification
+     * against a fixed dummy instead, which is what keeps the timing equal.
      */
     async signup(input) {
       const problem = passwordProblem(input.password);
       if (problem) throw new IdentityError({ code: 'weak_password', reason: problem });
 
       const email = normaliseEmail(input.email);
-      // Unconditional and before the branch — not a fixed sleep after, which is
-      // fragile under load and observable in the variance.
-      const passwordHash = await credentials.hashPassword(input.password);
+      await limit(limiterKey('signup', email, input.ipAddress));
 
       const existing = await findByEmail(email);
       if (existing) {
+        await credentials.verifyAgainstDummy(input.password);
         await mailer.alreadyRegistered(email);
         return { accepted: true };
       }
 
+      const passwordHash = await credentials.hashPassword(input.password);
       const inserted = await db.query<{ id: string }>(
         `INSERT INTO identity.users (email, email_display, name, password_hash, pepper_version)
          VALUES ($1, $2, $3, $4, $5) RETURNING id`,
@@ -204,6 +249,9 @@ export function createAccounts(deps: AccountsDeps): Accounts {
      */
     async login(input, meta = {}, now = clock()) {
       const email = normaliseEmail(input.email);
+      // Address + IP together: neither a distant attacker locking one victim
+      // out, nor one IP spraying many accounts, gets an unmetered budget.
+      await limit(limiterKey('login', email, meta.ipAddress));
       const user = await findByEmail(email);
 
       if (!user?.password_hash) {
@@ -219,7 +267,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
 
       const ok = await credentials.verifyPassword(user.password_hash, input.password, user.pepper_version);
       if (!ok) {
-        await recordFailure(user.id, user.failed_logins, now);
+        await recordFailure(user.id, now);
         return { kind: 'failed' };
       }
 
@@ -259,8 +307,22 @@ export function createAccounts(deps: AccountsDeps): Accounts {
      * with an email either way — the unknown-address email is safe because it
      * goes only to the address itself.
      */
-    async requestPasswordReset(rawEmail) {
+    async resendVerification(rawEmail, meta = {}) {
       const email = normaliseEmail(rawEmail);
+      await limit(limiterKey('verification_resend', email, meta.ipAddress));
+      const user = await findByEmail(email);
+      // Only an unverified account gets a link, and only at its own address; a
+      // verified or unknown address gets nothing and the same acceptance.
+      if (user && !user.email_verified_at) {
+        const token = await issueVerification(db, user.id, 'verify_email', expiresIn(VERIFICATION_TTL_S, clock()));
+        await mailer.verifyAddress(email, token);
+      }
+      return { accepted: true };
+    },
+
+    async requestPasswordReset(rawEmail, meta = {}) {
+      const email = normaliseEmail(rawEmail);
+      await limit(limiterKey('password_reset', email, meta.ipAddress));
       const user = await findByEmail(email);
       if (!user) {
         await mailer.resetUnknownAddress(email);
@@ -326,7 +388,13 @@ export function createAccounts(deps: AccountsDeps): Accounts {
       return { kind: 'done' };
     },
 
-    async changePassword(userId, current, next, keepSessionHash) {
+    /**
+     * Change the password with the current one in hand. Every other session is
+     * revoked; the one named by `keepSessionHash` survives — and, with
+     * `config.rotateSessions`, is rotated (it just re-proved a credential, so
+     * the identifier is renewed and `authenticatedAt` is refreshed).
+     */
+    async changePassword(userId, current, next, keepSessionHash, now = clock()) {
       const problem = passwordProblem(next);
       if (problem) throw new IdentityError({ code: 'weak_password', reason: problem });
 
@@ -347,7 +415,18 @@ export function createAccounts(deps: AccountsDeps): Accounts {
         config.pepperVersion,
       ]);
       await revokeAllSessions(db, userId, keepSessionHash);
+      const result: PasswordChanged = {};
+      if (keepSessionHash && config.rotateSessions) {
+        const rotated = await rotateSession(db, keepSessionHash, now, { authenticatedAt: now });
+        if (rotated) result.rotated = rotated;
+      } else if (keepSessionHash) {
+        await db.query('UPDATE identity.sessions SET authenticated_at = $2 WHERE token_hash = $1', [
+          keepSessionHash,
+          now,
+        ]);
+      }
       await mailer.passwordChanged(user.email).catch((e) => warn(`password-changed mail failed: ${String(e)}`));
+      return result;
     },
 
     /**
