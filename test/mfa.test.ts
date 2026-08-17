@@ -9,14 +9,13 @@ import { Secret, TOTP } from 'otpauth';
 
 import { createIdentity } from '../src/index.ts';
 import { createMfa } from '../src/mfa.ts';
-import { type Harness, SKIP_REASON, setupDatabase, testConfig, testTotpKey } from './harness.ts';
+import { type Harness, one, SKIP_REASON, setupDatabase, testConfig, testTotpKey, tokenFrom } from './harness.ts';
 
 const harness = await setupDatabase();
 after(async () => {
   await harness?.close();
 });
 
-const tokenFrom = (body: string): string => decodeURIComponent(/token=([^&\s]+)/.exec(body)![1]!);
 const codeFor = (secret: string, when: Date): string =>
   new TOTP({ algorithm: 'SHA1', digits: 6, period: 30, secret: Secret.fromBase32(secret) }).generate({
     timestamp: when.getTime(),
@@ -35,10 +34,10 @@ describe('identity-kit/mfa', { skip: harness === null ? SKIP_REASON : false }, (
   const verifiedUser = async (email: string, password: string): Promise<string> => {
     h.mail.clear();
     await id.signup({ email, password });
-    await id.verifyEmail(tokenFrom(h.mail.to(email)[0]!.body));
+    await id.verifyEmail(tokenFrom(h.mail.first(email).body));
     h.mail.clear();
     const rows = await h.db.query<{ id: string }>('SELECT id FROM identity.users WHERE email = $1', [email]);
-    return rows[0]!.id;
+    return one(rows).id;
   };
 
   it('enrols with a verified code and returns recovery codes', async () => {
@@ -94,13 +93,13 @@ describe('identity-kit/mfa', { skip: harness === null ? SKIP_REASON : false }, (
     const login = await id.login({ email: 'pat@example.com', password: 'correct horse battery' }, {}, t0);
     const done = await mfa.verifyRecoveryCode(
       login.kind === 'mfa_required' ? login.pendingToken : '',
-      codes[0]!,
+      one(codes),
       {},
       t0,
     );
     assert.equal(done.kind, 'session');
     assert.equal(await mfa.remainingRecoveryCodes(userId), 9);
-    assert.match(h.mail.to('pat@example.com')[0]!.subject, /recovery code/i);
+    assert.match(h.mail.first('pat@example.com').subject, /recovery code/i);
   });
 
   it('bounds guesses: five wrong codes restart the login', async () => {

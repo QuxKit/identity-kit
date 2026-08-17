@@ -192,6 +192,7 @@ export function createMfa(opts: MfaOptions): Mfa {
         'UPDATE identity.pending_logins SET attempts = attempts + 1 WHERE token_hash = $1 RETURNING attempts',
         [tokenHash],
       );
+      // biome-ignore lint/style/noNonNullAssertion: UPDATE … RETURNING on the row just read inside the transaction
       return { kind: 'ok', userId: row.user_id, tokenHash, attempt: updated[0]!.attempts };
     });
   };
@@ -372,6 +373,7 @@ export function createMfa(opts: MfaOptions): Mfa {
         'SELECT count(*)::text AS n FROM identity.recovery_codes WHERE user_id = $1 AND used_at IS NULL',
         [userId],
       );
+      // biome-ignore lint/style/noNonNullAssertion: count(*) always returns one row
       return Number(rows[0]!.n);
     },
   };

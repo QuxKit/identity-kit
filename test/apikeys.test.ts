@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
 import { createApiKeys } from '../src/apikeys.ts';
-import { type Harness, SKIP_REASON, setupDatabase } from './harness.ts';
+import { type Harness, one, SKIP_REASON, setupDatabase } from './harness.ts';
 
 const harness = await setupDatabase();
 after(async () => {
@@ -35,14 +35,14 @@ describe('identity-kit/apikeys', { skip: harness === null ? SKIP_REASON : false 
 
     const principal = await keys.resolveApiKey(created.key);
     assert.ok(principal);
-    assert.equal(principal!.ownerId, 'org_42');
-    assert.equal(principal!.apiKeyId, created.id);
-    assert.deepEqual(principal!.scopes, ['read', 'write']);
+    assert.equal(principal?.ownerId, 'org_42');
+    assert.equal(principal?.apiKeyId, created.id);
+    assert.deepEqual(principal?.scopes, ['read', 'write']);
 
     // the full key is not retrievable — a listing shows only the display prefix
     const listed = await keys.listApiKeys('org_42');
     assert.equal(listed.length, 1);
-    assert.equal(listed[0]!.displayPrefix, created.displayPrefix);
+    assert.equal(one(listed).displayPrefix, created.displayPrefix);
     assert.equal((listed[0] as unknown as Record<string, unknown>).key, undefined);
   });
 

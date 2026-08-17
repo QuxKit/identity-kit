@@ -6,14 +6,12 @@ import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 import { IdentityError } from '../src/errors.ts';
 import { createIdentity } from '../src/index.ts';
-import { type Harness, SKIP_REASON, setupDatabase, testConfig } from './harness.ts';
+import { type Harness, one, SKIP_REASON, setupDatabase, testConfig, tokenFrom } from './harness.ts';
 
 const harness = await setupDatabase();
 after(async () => {
   await harness?.close();
 });
-
-const tokenFrom = (body: string): string => decodeURIComponent(/token=([^&\s]+)/.exec(body)![1]!);
 
 describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
   const h = harness as Harness;
@@ -23,13 +21,13 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
     const rows = await h.db.query<{ n: string }>('SELECT count(*)::text AS n FROM identity.users WHERE email = $1', [
       email.toLowerCase(),
     ]);
-    return Number(rows[0]!.n);
+    return Number(one(rows).n);
   };
 
   const makeVerifiedUser = async (email: string, password: string): Promise<void> => {
     h.mail.clear();
     await id.signup({ email, password });
-    const token = tokenFrom(h.mail.to(email)[0]!.body);
+    const token = tokenFrom(h.mail.first(email).body);
     await id.verifyEmail(token);
     h.mail.clear();
   };
@@ -40,7 +38,7 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
     assert.equal(await userCount('alice@example.com'), 1);
     const mail = h.mail.to('alice@example.com');
     assert.equal(mail.length, 1);
-    assert.match(mail[0]!.subject, /confirm/i);
+    assert.match(one(mail).subject, /confirm/i);
   });
 
   it('signup is enumeration-safe: a taken address accepts and emails, never errors', async () => {
@@ -48,7 +46,7 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
     const r = await id.signup({ email: 'alice@example.com', password: 'a different password' });
     assert.deepEqual(r, { accepted: true }, 'same shape as a fresh signup');
     assert.equal(await userCount('alice@example.com'), 1, 'no second row');
-    assert.match(h.mail.to('alice@example.com')[0]!.subject, /tried to create/i);
+    assert.match(h.mail.first('alice@example.com').subject, /tried to create/i);
   });
 
   it('signup rejects a weak password', async () => {
@@ -61,7 +59,7 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
   it('verifyEmail verifies the address and returns nothing that authenticates', async () => {
     h.mail.clear();
     await id.signup({ email: 'bob@example.com', password: 'correct horse battery' });
-    const token = tokenFrom(h.mail.to('bob@example.com')[0]!.body);
+    const token = tokenFrom(h.mail.first('bob@example.com').body);
 
     const result = await id.verifyEmail(token);
     assert.equal(result, true);
@@ -83,7 +81,7 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
       'SELECT failed_logins FROM identity.users WHERE email = $1',
       ['carol@example.com'],
     );
-    assert.equal(rows[0]!.failed_logins, 1);
+    assert.equal(one(rows).failed_logins, 1);
   });
 
   it('login fails on an unverified account even with the right password', async () => {
@@ -103,7 +101,7 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
     const rows = await h.db.query<{ id: string }>('SELECT id FROM identity.users WHERE email = $1', [
       'erin@example.com',
     ]);
-    assert.equal(resolved!.userId, rows[0]!.id);
+    assert.equal(resolved?.userId, one(rows).id);
   });
 
   it('backs off after repeated failures instead of hard-locking', async () => {
@@ -126,7 +124,7 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
 
     h.mail.clear();
     await id.requestPasswordReset('grace@example.com');
-    const resetToken = tokenFrom(h.mail.to('grace@example.com')[0]!.body);
+    const resetToken = tokenFrom(h.mail.first('grace@example.com').body);
 
     const done = await id.resetPassword(resetToken, 'a brand new password');
     assert.deepEqual(done, { kind: 'done' });
@@ -144,7 +142,7 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
     await makeVerifiedUser('heidi@example.com', 'old password here');
     h.mail.clear();
     await id.requestPasswordReset('heidi@example.com');
-    const token = tokenFrom(h.mail.to('heidi@example.com')[0]!.body);
+    const token = tokenFrom(h.mail.first('heidi@example.com').body);
     const r = await id.resetPassword(token, 'short');
     assert.equal(r.kind, 'weak_password');
     // and it is still burned
@@ -155,7 +153,7 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
     h.mail.clear();
     const r = await id.requestPasswordReset('ghost@example.com');
     assert.deepEqual(r, { accepted: true });
-    assert.match(h.mail.to('ghost@example.com')[0]!.subject, /reset/i);
+    assert.match(h.mail.first('ghost@example.com').subject, /reset/i);
   });
 
   it('changePassword refuses a wrong current password and revokes sessions on success', async () => {
@@ -166,7 +164,7 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
     const rows = await h.db.query<{ id: string }>('SELECT id FROM identity.users WHERE email = $1', [
       'ivan@example.com',
     ]);
-    const userId = rows[0]!.id;
+    const userId = one(rows).id;
 
     await assert.rejects(
       () => id.changePassword(userId, 'not the password', 'a new password here'),
@@ -176,7 +174,7 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
     // a second session that should be revoked
     const other = await id.login({ email: 'ivan@example.com', password: 'old password here' });
     const otherToken = other.kind === 'session' ? other.token : '';
-    await id.changePassword(userId, 'old password here', 'a new password here', kept!.tokenHash);
+    await id.changePassword(userId, 'old password here', 'a new password here', kept?.tokenHash);
     assert.equal(await id.resolveSession(otherToken), null, 'other sessions revoked');
   });
 
@@ -187,7 +185,7 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
     const rows = await h.db.query<{ id: string }>('SELECT id FROM identity.users WHERE email = $1', [
       'judy@example.com',
     ]);
-    const userId = rows[0]!.id;
+    const userId = one(rows).id;
 
     h.mail.clear();
     await id.requestDeletion(userId);
@@ -198,7 +196,7 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
       'a deletion-pending account cannot log in',
     );
 
-    const cancelToken = tokenFrom(h.mail.to('judy@example.com')[0]!.body);
+    const cancelToken = tokenFrom(h.mail.first('judy@example.com').body);
     assert.equal(await id.cancelDeletion(cancelToken), true);
     assert.equal(
       (await id.login({ email: 'judy@example.com', password: 'correct horse battery' })).kind,

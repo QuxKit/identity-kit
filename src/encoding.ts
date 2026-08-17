@@ -47,7 +47,7 @@ const CRC_TABLE = (() => {
 export function crc32(value: string): number {
   let c = 0xffffffff;
   for (let i = 0; i < value.length; i += 1) {
-    c = CRC_TABLE[(c ^ value.charCodeAt(i)) & 0xff]! ^ (c >>> 8);
+    c = CRC_TABLE[(c ^ value.charCodeAt(i)) & 0xff] ^ (c >>> 8);
   }
   return (c ^ 0xffffffff) >>> 0;
 }

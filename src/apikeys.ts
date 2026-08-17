@@ -125,6 +125,7 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
           input.expiresAt ?? null,
         ],
       );
+      // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING yields exactly one row
       return { id: rows[0]!.id, key, displayPrefix };
     },
 

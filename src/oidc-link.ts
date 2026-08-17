@@ -84,6 +84,7 @@ export async function linkOrCreate(db: SqlExecutor, claims: ProviderClaims, now:
        VALUES ($1, $2, $3, NULL) RETURNING id`,
       [email, claims.email, claims.emailVerified ? now : null],
     );
+    // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING yields exactly one row
     const userId = rows[0]!.id;
     await tx.query(
       'INSERT INTO identity.oauth_identities (provider, subject, user_id, email) VALUES ($1, $2, $3, $4)',

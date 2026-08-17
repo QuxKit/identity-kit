@@ -156,6 +156,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
          VALUES ($1, $2, $3, $4, $5) RETURNING id`,
         [email, input.email.trim(), input.name ?? null, passwordHash, config.pepperVersion],
       );
+      // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING yields exactly one row
       const userId = inserted[0]!.id;
       const token = await issueVerification(db, userId, 'verify_email', expiresIn(VERIFICATION_TTL_S, clock()));
       await mailer.verifyAddress(email, token);
@@ -177,7 +178,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
           [tokenHash],
         );
         const row = rows[0];
-        if (!row || row.purpose !== 'verify_email' || row.expires_at <= now) return false;
+        if (row?.purpose !== 'verify_email' || row.expires_at <= now) return false;
 
         await tx.query('DELETE FROM identity.email_verification_tokens WHERE token_hash = $1', [tokenHash]);
         if (row.new_email) {
@@ -205,7 +206,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
       const email = normaliseEmail(input.email);
       const user = await findByEmail(email);
 
-      if (!user || !user.password_hash) {
+      if (!user?.password_hash) {
         await credentials.verifyAgainstDummy(input.password);
         return { kind: 'failed' };
       }
@@ -315,6 +316,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
           [row.user_id, passwordHash, config.pepperVersion, now],
         );
         await tx.query('DELETE FROM identity.sessions WHERE user_id = $1', [row.user_id]);
+        // biome-ignore lint/style/noNonNullAssertion: UPDATE … RETURNING on the row the token named
         return { kind: 'ok', email: updated[0]!.email };
       });
 
@@ -374,7 +376,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
           [tokenHash],
         );
         const row = rows[0];
-        if (!row || row.purpose !== 'cancel_deletion' || row.expires_at <= now) return false;
+        if (row?.purpose !== 'cancel_deletion' || row.expires_at <= now) return false;
         await tx.query('DELETE FROM identity.email_verification_tokens WHERE token_hash = $1', [tokenHash]);
         await tx.query('UPDATE identity.users SET deletion_requested_at = NULL WHERE id = $1', [row.user_id]);
         return true;

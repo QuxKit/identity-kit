@@ -43,6 +43,21 @@ export function fromPool(pool: pg.Pool): SqlExecutor {
 export const TEST_DATABASE_URL =
   process.env.IDENTITY_KIT_TEST_DATABASE_URL ?? 'postgres://localhost:5432/identity_kit_test';
 
+/** The first row of a result, or a thrown assertion — for the queries whose
+ *  contract is "exactly one row" (INSERT … RETURNING, a lookup by primary key). */
+export function one<T>(rows: readonly T[], what = 'row'): T {
+  const row = rows[0];
+  if (row === undefined) throw new Error(`expected a ${what}, got none`);
+  return row;
+}
+
+/** Pull the token out of a transactional mail body. */
+export function tokenFrom(body: string): string {
+  const match = /token=([^&\s]+)/.exec(body);
+  if (!match?.[1]) throw new Error(`no token in mail body: ${body}`);
+  return decodeURIComponent(match[1]);
+}
+
 /** Collects sent mail so a test can assert what was sent to whom. */
 export class MailCollector implements MailSender {
   readonly sent: Message[] = [];
@@ -51,6 +66,10 @@ export class MailCollector implements MailSender {
   }
   to(address: string): Message[] {
     return this.sent.filter((m) => m.to === address);
+  }
+  /** The first message sent to `address`, or a thrown assertion. */
+  first(address: string): Message {
+    return one(this.to(address), `mail to ${address}`);
   }
   clear(): void {
     this.sent.length = 0;
