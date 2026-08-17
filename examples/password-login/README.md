@@ -10,6 +10,7 @@ pnpm install && pnpm build
 # a throwaway database with the schema applied
 createdb identity_kit_example
 psql -v ON_ERROR_STOP=1 -d identity_kit_example -f sql/001_identity.sql
+psql -v ON_ERROR_STOP=1 -d identity_kit_example -f sql/005_hardening.sql
 
 # run it
 cd examples/password-login

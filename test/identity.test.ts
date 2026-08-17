@@ -278,4 +278,55 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
       'login works again after cancelling',
     );
   });
+
+  it('a new device gets a sign-in notification; a seen user agent does not', async () => {
+    await makeVerifiedUser('kim@example.com', 'correct horse battery');
+    h.mail.clear();
+    const first = await id.login(
+      { email: 'kim@example.com', password: 'correct horse battery' },
+      { userAgent: 'Phone/1', ipAddress: '9.9.9.9' },
+    );
+    assert.equal(first.kind, 'session');
+    const mail = h.mail.first('kim@example.com');
+    assert.match(mail.subject, /new sign-in/i);
+    assert.match(mail.body, /9\.9\.9\.9/);
+    h.mail.clear();
+    await id.login({ email: 'kim@example.com', password: 'correct horse battery' }, { userAgent: 'Phone/1' });
+    assert.equal(h.mail.sent.length, 0, 'the same device again: no mail');
+    await id.login({ email: 'kim@example.com', password: 'correct horse battery' }, { userAgent: 'Laptop/2' });
+    assert.match(h.mail.first('kim@example.com').body, /unrecognised device/, 'no IP given: a generic phrase');
+  });
+
+  it('purgeUnverified and purgeDeleted remove only what is past its window', async () => {
+    const now = new Date();
+    const week = 7 * 24 * 60 * 60 * 1000;
+    h.mail.clear();
+    await id.signup({ email: 'stale@example.com', password: 'correct horse battery' });
+    await h.db.query('UPDATE identity.users SET created_at = $2 WHERE email = $1', [
+      'stale@example.com',
+      new Date(now.getTime() - week - 1000),
+    ]);
+    await id.signup({ email: 'fresh@example.com', password: 'correct horse battery' });
+    assert.ok((await id.purgeUnverified(now)) >= 1);
+    assert.equal(await userCount('stale@example.com'), 0);
+    assert.equal(await userCount('fresh@example.com'), 1, 'inside the window, kept');
+
+    await makeVerifiedUser('gone@example.com', 'correct horse battery');
+    const uid = one(
+      await h.db.query<{ id: string }>('SELECT id FROM identity.users WHERE email = $1', ['gone@example.com']),
+    ).id;
+    await id.requestDeletion(uid, new Date(now.getTime() - week - 1000));
+    await makeVerifiedUser('pending@example.com', 'correct horse battery');
+    const pid = one(
+      await h.db.query<{ id: string }>('SELECT id FROM identity.users WHERE email = $1', ['pending@example.com']),
+    ).id;
+    await id.requestDeletion(pid, now);
+    assert.ok((await id.purgeDeleted(now)) >= 1);
+    assert.equal(await userCount('gone@example.com'), 0);
+    assert.equal(await userCount('pending@example.com'), 1, 'still in its grace period');
+    await assert.rejects(
+      () => id.requestDeletion('00000000-0000-0000-0000-000000000000'),
+      (e: unknown) => IdentityError.hasCode(e, 'not_found'),
+    );
+  });
 });
