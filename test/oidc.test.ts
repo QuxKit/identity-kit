@@ -7,6 +7,8 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
+import { IdentityError } from '../src/errors.ts';
+import { createOidc } from '../src/oidc.ts';
 import { linkOrCreate } from '../src/oidc-link.ts';
 import { type Harness, one, SKIP_REASON, setupDatabase } from './harness.ts';
 
@@ -16,6 +18,23 @@ after(async () => {
 });
 
 const NOW = new Date('2026-08-15T12:00:00Z');
+
+describe('identity-kit/oidc — wiring (no network)', () => {
+  it('an unknown provider is a typed error before any discovery', async () => {
+    const oidc = createOidc({
+      db: { query: async () => [], transaction: async (fn) => fn({} as never) },
+      providers: {},
+    });
+    await assert.rejects(
+      () => oidc.begin('nope'),
+      (e: unknown) => IdentityError.hasCode(e, 'unknown_provider') && e.failure.provider === 'nope',
+    );
+    await assert.rejects(
+      () => oidc.complete('nope', 'https://app.test/cb?code=x&state=y', { state: 'y', nonce: 'n', codeVerifier: 'v' }),
+      (e: unknown) => IdentityError.hasCode(e, 'unknown_provider'),
+    );
+  });
+});
 
 describe('identity-kit/oidc — account linking', { skip: harness === null ? SKIP_REASON : false }, () => {
   const h = harness as Harness;
