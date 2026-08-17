@@ -7,8 +7,10 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
+import { IdentityError } from '../src/errors.ts';
+import { createOidc } from '../src/oidc.ts';
 import { linkOrCreate } from '../src/oidc-link.ts';
-import { setupDatabase, SKIP_REASON, type Harness } from './harness.ts';
+import { type Harness, one, SKIP_REASON, setupDatabase } from './harness.ts';
 
 const harness = await setupDatabase();
 after(async () => {
@@ -16,6 +18,23 @@ after(async () => {
 });
 
 const NOW = new Date('2026-08-15T12:00:00Z');
+
+describe('identity-kit/oidc — wiring (no network)', () => {
+  it('an unknown provider is a typed error before any discovery', async () => {
+    const oidc = createOidc({
+      db: { query: async () => [], transaction: async (fn) => fn({} as never) },
+      providers: {},
+    });
+    await assert.rejects(
+      () => oidc.begin('nope'),
+      (e: unknown) => IdentityError.hasCode(e, 'unknown_provider') && e.failure.provider === 'nope',
+    );
+    await assert.rejects(
+      () => oidc.complete('nope', 'https://app.test/cb?code=x&state=y', { state: 'y', nonce: 'n', codeVerifier: 'v' }),
+      (e: unknown) => IdentityError.hasCode(e, 'unknown_provider'),
+    );
+  });
+});
 
 describe('identity-kit/oidc — account linking', { skip: harness === null ? SKIP_REASON : false }, () => {
   const h = harness as Harness;
@@ -27,7 +46,7 @@ describe('identity-kit/oidc — account linking', { skip: harness === null ? SKI
        VALUES ($1, $2, $3, 'x') RETURNING id`,
       [email, email, verified ? NOW : null],
     );
-    return rows[0]!.id;
+    return one(rows).id;
   };
 
   const claims = (over: Partial<Parameters<typeof linkOrCreate>[1]> = {}) => ({
@@ -47,8 +66,8 @@ describe('identity-kit/oidc — account linking', { skip: harness === null ? SKI
       'SELECT email_verified_at, password_hash FROM identity.users WHERE id = $1',
       [r.userId],
     );
-    assert.ok(rows[0]!.email_verified_at, 'provider-verified email is verified');
-    assert.equal(rows[0]!.password_hash, null, 'an oauth account has no password');
+    assert.ok(one(rows).email_verified_at, 'provider-verified email is verified');
+    assert.equal(one(rows).password_hash, null, 'an oauth account has no password');
 
     const unv = await linkOrCreate(h.db, claims({ email: 'new-unverified@example.com', emailVerified: false }), NOW);
     if (unv.kind !== 'ok') return assert.fail('expected ok');
@@ -56,7 +75,7 @@ describe('identity-kit/oidc — account linking', { skip: harness === null ? SKI
       'SELECT email_verified_at FROM identity.users WHERE id = $1',
       [unv.userId],
     );
-    assert.equal(urows[0]!.email_verified_at, null, 'provider-unverified email stays unverified');
+    assert.equal(one(urows).email_verified_at, null, 'provider-unverified email stays unverified');
   });
 
   it('returns the same user for an already-linked identity', async () => {

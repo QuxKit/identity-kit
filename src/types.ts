@@ -53,8 +53,13 @@ export interface IdentityConfig {
    *  the database and out of the backup. */
   pepper: string;
   /** The version stamped on hashes made with the current pepper. Rotation bumps
-   *  it, keeps the old key available, and re-peppers on next successful login. */
+   *  it, keeps the old key available in `previousPeppers`, and re-peppers on
+   *  next successful login. */
   pepperVersion: number;
+  /** Retired peppers by version, so a hash made under an older one still
+   *  verifies (and is re-peppered on that login). Drop a version only once no
+   *  row carries it. */
+  previousPeppers?: Record<number, string>;
   /** Base URL for the links in transactional mail (`https://app.example.com`). */
   appUrl: string;
   /**
@@ -64,6 +69,18 @@ export interface IdentityConfig {
    * succeed and do nothing.
    */
   cookieSecure: boolean;
+  /**
+   * Rotate the session identifier on sliding renewal and after a password or
+   * MFA change on the current session. When on, `resolveSession` may return a
+   * `rotated` token the host MUST set as the new cookie, and `changePassword`
+   * returns the rotated session for the kept token. Off by default so hosts that
+   * ignore the return values keep working; turn it on once yours re-sets the
+   * cookie.
+   */
+  rotateSessions?: boolean;
+  /** How recent a session's credential proof must be for MFA enrolment via a
+   *  session token. Default ten minutes. */
+  reauthWindowMs?: number;
 }
 
 // --- mail (a seam) ----------------------------------------------------------
@@ -108,6 +125,12 @@ export interface ResolvedSession {
   userId: UserId;
   expiresAt: Date;
   absoluteExpiresAt: Date;
+  /** When the holder last proved a credential on this session. */
+  authenticatedAt: Date;
+  /** Present only when `rotateSessions` is on and this read renewed the session:
+   *  the token was rotated and the host must set `rotated.token` as the cookie.
+   *  `tokenHash` above is already the new hash. */
+  rotated?: { token: string; expiresAt: Date };
 }
 
 export interface SessionSummary {
@@ -125,6 +148,8 @@ export interface SignupInput {
   email: string;
   password: string;
   name?: string;
+  /** The caller's IP, if the host has it — used only as a rate-limit key. */
+  ipAddress?: string | null;
 }
 
 export type LoginResult =
@@ -146,7 +171,4 @@ export interface SecondFactor {
   pendingFor(userId: UserId, now: Date): Promise<string | null>;
 }
 
-export type ResetResult =
-  | { kind: 'done' }
-  | { kind: 'weak_password'; message: string }
-  | { kind: 'invalid' };
+export type ResetResult = { kind: 'done' } | { kind: 'weak_password'; message: string } | { kind: 'invalid' };

@@ -1,0 +1,16 @@
+{
+  "name": "identity-kit-example-password-login",
+  "private": true,
+  "type": "module",
+  "description": "Sign up, verify, log in and resolve a session with @quxkit/identity-kit over a local Postgres.",
+  "scripts": {
+    "start": "tsx main.ts"
+  },
+  "dependencies": {
+    "@quxkit/identity-kit": "link:../..",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}

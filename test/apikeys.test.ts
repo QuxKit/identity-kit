@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
 import { createApiKeys } from '../src/apikeys.ts';
-import { setupDatabase, SKIP_REASON, type Harness } from './harness.ts';
+import { IdentityError } from '../src/errors.ts';
+import { type Harness, one, SKIP_REASON, setupDatabase } from './harness.ts';
 
 const harness = await setupDatabase();
 after(async () => {
@@ -35,14 +36,14 @@ describe('identity-kit/apikeys', { skip: harness === null ? SKIP_REASON : false 
 
     const principal = await keys.resolveApiKey(created.key);
     assert.ok(principal);
-    assert.equal(principal!.ownerId, 'org_42');
-    assert.equal(principal!.apiKeyId, created.id);
-    assert.deepEqual(principal!.scopes, ['read', 'write']);
+    assert.equal(principal?.ownerId, 'org_42');
+    assert.equal(principal?.apiKeyId, created.id);
+    assert.deepEqual(principal?.scopes, ['read', 'write']);
 
     // the full key is not retrievable — a listing shows only the display prefix
     const listed = await keys.listApiKeys('org_42');
     assert.equal(listed.length, 1);
-    assert.equal(listed[0]!.displayPrefix, created.displayPrefix);
+    assert.equal(one(listed).displayPrefix, created.displayPrefix);
     assert.equal((listed[0] as unknown as Record<string, unknown>).key, undefined);
   });
 
@@ -53,8 +54,28 @@ describe('identity-kit/apikeys', { skip: harness === null ? SKIP_REASON : false 
 
     const live = await keys.createApiKey('org_42', { name: 'to-revoke' });
     assert.ok(await keys.resolveApiKey(live.key));
-    await keys.revokeApiKey(live.id);
+    const when = new Date('2026-08-15T12:00:00Z');
+    await keys.revokeApiKey(live.id, when);
     assert.equal(await keys.resolveApiKey(live.key), null, 'revoked key does not resolve');
+    // soft: the row stays for audit, stamped once
+    const listed = (await keys.listApiKeys('org_42')).find((k) => k.id === live.id);
+    assert.equal(listed?.revokedAt?.getTime(), when.getTime());
+    await keys.revokeApiKey(live.id, new Date(when.getTime() + 1000));
+    const again = (await keys.listApiKeys('org_42')).find((k) => k.id === live.id);
+    assert.equal(again?.revokedAt?.getTime(), when.getTime(), 'a second revoke does not move the timestamp');
+    const row = one(
+      await h.db.query<{ revoked_at: Date | null }>('SELECT revoked_at FROM identity.api_keys WHERE id = $1', [
+        live.id,
+      ]),
+    );
+    assert.ok(row.revoked_at, 'revoked_at is real');
+  });
+
+  it('a bad prefix is a typed configuration error', () => {
+    assert.throws(
+      () => createApiKeys({ db: h.db, prefix: 'Bad-Prefix' }),
+      (e: unknown) => IdentityError.hasCode(e, 'invalid_config'),
+    );
   });
 
   it('does not resolve a structurally invalid key (no probe on the hot path)', async () => {

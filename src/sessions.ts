@@ -11,14 +11,7 @@
 // that stops running must not silently extend everyone's session.
 
 import { issueToken, sha256 } from './tokens.ts';
-import type {
-  IdentityConfig,
-  ResolvedSession,
-  SessionMeta,
-  SessionSummary,
-  SqlExecutor,
-  UserId,
-} from './types.ts';
+import type { IdentityConfig, ResolvedSession, SessionMeta, SessionSummary, SqlExecutor, UserId } from './types.ts';
 
 /** A session refreshed forever is a session never revoked. */
 export const ABSOLUTE_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
@@ -29,6 +22,13 @@ interface SessionRow {
   user_id: string;
   expires_at: Date;
   absolute_expires_at: Date;
+  authenticated_at: Date;
+}
+
+export interface ResolveOptions {
+  /** Rotate the identifier when this read renews the idle window. The caller
+   *  must then set `rotated.token` as the cookie. */
+  rotateOnRenewal?: boolean;
 }
 
 export async function createSession(
@@ -43,11 +43,49 @@ export async function createSession(
 
   await db.query(
     `INSERT INTO identity.sessions
-       (token_hash, user_id, expires_at, absolute_expires_at, ip_address, user_agent, created_at, last_seen_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
+       (token_hash, user_id, expires_at, absolute_expires_at, ip_address, user_agent,
+        created_at, last_seen_at, authenticated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7)`,
     [hash, userId, expiresAt, absoluteExpiresAt, meta.ipAddress ?? null, meta.userAgent ?? null, now],
   );
   return { token: plaintext, expiresAt };
+}
+
+/**
+ * Give a live session a fresh identifier: a new row with the same user, expiry
+ * and metadata, the old row deleted, in one transaction. The old token is
+ * invalid the moment this returns. Called on sliding renewal (so a token that
+ * leaked early does not stay good for the whole idle window) and after a
+ * privilege change on the current session (a password or MFA change). Returns
+ * null when there is no such live session.
+ *
+ * `authenticatedAt` — pass it when the holder has just re-proved a credential
+ * (a password change); otherwise the previous proof time carries forward.
+ */
+export async function rotateSession(
+  db: SqlExecutor,
+  tokenHash: string,
+  now: Date,
+  opts: { authenticatedAt?: Date } = {},
+): Promise<{ token: string; tokenHash: string; expiresAt: Date } | null> {
+  const { plaintext, hash } = issueToken();
+  return db.transaction(async (tx) => {
+    const rows = await tx.query<{ expires_at: Date }>(
+      `INSERT INTO identity.sessions
+         (token_hash, user_id, expires_at, absolute_expires_at, ip_address, user_agent,
+          created_at, last_seen_at, authenticated_at)
+       SELECT $2, user_id, expires_at, absolute_expires_at, ip_address, user_agent,
+              created_at, $3, COALESCE($4, authenticated_at)
+         FROM identity.sessions
+        WHERE token_hash = $1 AND expires_at > $3 AND absolute_expires_at > $3
+       RETURNING expires_at`,
+      [tokenHash, hash, now, opts.authenticatedAt ?? null],
+    );
+    const inserted = rows[0];
+    if (!inserted) return null;
+    await tx.query('DELETE FROM identity.sessions WHERE token_hash = $1', [tokenHash]);
+    return { token: plaintext, tokenHash: hash, expiresAt: inserted.expires_at };
+  });
 }
 
 /**
@@ -59,10 +97,11 @@ export async function resolveSession(
   db: SqlExecutor,
   token: string,
   now: Date,
+  opts: ResolveOptions = {},
 ): Promise<ResolvedSession | null> {
   const tokenHash = sha256(token);
   const rows = await db.query<SessionRow>(
-    `SELECT token_hash, user_id, expires_at, absolute_expires_at
+    `SELECT token_hash, user_id, expires_at, absolute_expires_at, authenticated_at
        FROM identity.sessions WHERE token_hash = $1`,
     [tokenHash],
   );
@@ -74,21 +113,35 @@ export async function resolveSession(
     return null;
   }
 
-  let expiresAt = row.expires_at;
-  if (row.expires_at.getTime() - now.getTime() < IDLE_LIFETIME_MS / 2) {
-    expiresAt = new Date(Math.min(now.getTime() + IDLE_LIFETIME_MS, row.absolute_expires_at.getTime()));
-    await db.query(
-      'UPDATE identity.sessions SET expires_at = $2, last_seen_at = $3 WHERE token_hash = $1',
-      [tokenHash, expiresAt, now],
-    );
-  }
-
-  return {
+  const resolved: ResolvedSession = {
     tokenHash: row.token_hash,
     userId: row.user_id,
-    expiresAt,
+    expiresAt: row.expires_at,
     absoluteExpiresAt: row.absolute_expires_at,
+    authenticatedAt: row.authenticated_at,
   };
+
+  if (row.expires_at.getTime() - now.getTime() < IDLE_LIFETIME_MS / 2) {
+    const expiresAt = new Date(Math.min(now.getTime() + IDLE_LIFETIME_MS, row.absolute_expires_at.getTime()));
+    await db.query('UPDATE identity.sessions SET expires_at = $2, last_seen_at = $3 WHERE token_hash = $1', [
+      tokenHash,
+      expiresAt,
+      now,
+    ]);
+    resolved.expiresAt = expiresAt;
+    if (opts.rotateOnRenewal) {
+      // The renewal is the write we already pay for; rotating here bounds how
+      // long a token that leaked early stays good, at no extra write on the
+      // read-mostly path.
+      const rotated = await rotateSession(db, tokenHash, now);
+      if (rotated) {
+        resolved.tokenHash = rotated.tokenHash;
+        resolved.rotated = { token: rotated.token, expiresAt: rotated.expiresAt };
+      }
+    }
+  }
+
+  return resolved;
 }
 
 export async function revokeSession(db: SqlExecutor, tokenHash: string): Promise<void> {
@@ -102,20 +155,15 @@ export async function revokeSession(db: SqlExecutor, tokenHash: string): Promise
  * *how* the account authenticates invalidates everything that authenticated
  * under the old rules. Returns how many were revoked.
  */
-export async function revokeAllSessions(
-  db: SqlExecutor,
-  userId: UserId,
-  exceptTokenHash?: string,
-): Promise<number> {
+export async function revokeAllSessions(db: SqlExecutor, userId: UserId, exceptTokenHash?: string): Promise<number> {
   const rows = exceptTokenHash
     ? await db.query<{ token_hash: string }>(
         'DELETE FROM identity.sessions WHERE user_id = $1 AND token_hash <> $2 RETURNING token_hash',
         [userId, exceptTokenHash],
       )
-    : await db.query<{ token_hash: string }>(
-        'DELETE FROM identity.sessions WHERE user_id = $1 RETURNING token_hash',
-        [userId],
-      );
+    : await db.query<{ token_hash: string }>('DELETE FROM identity.sessions WHERE user_id = $1 RETURNING token_hash', [
+        userId,
+      ]);
   return rows.length;
 }
 
@@ -151,12 +199,59 @@ export async function sweepExpiredSessions(db: SqlExecutor, now: Date): Promise<
   return rows.length;
 }
 
+export interface SweepReport {
+  sessions: number;
+  passwordResetTokens: number;
+  emailVerificationTokens: number;
+  /** 0 when the MFA schema (sql/002_mfa.sql) is not applied. */
+  pendingLogins: number;
+  /** Rate-limit buckets idle for over a day. 0 when 005 is not applied. */
+  rateLimits: number;
+}
+
+/** Rate-limit rows idle this long are pruned; a bucket that has fully refilled
+ *  is indistinguishable from no row at all. */
+const RATE_LIMIT_IDLE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Every sweeper in one call, for the one cron job a host runs. Each table is
+ * expiry-checked on read as well, so this is housekeeping — but the token tables
+ * only shrink here, and a reset or pending-login table that never shrinks is a
+ * slow leak of a live-credential-shaped row per attempt.
+ */
+export async function sweepExpired(db: SqlExecutor, now: Date): Promise<SweepReport> {
+  const count = async (sql: string, params: readonly unknown[]): Promise<number> =>
+    (await db.query<{ n: string }>(sql, params)).length;
+  const exists = async (table: string): Promise<boolean> => {
+    const rows = await db.query<{ ok: string | null }>('SELECT to_regclass($1)::text AS ok', [`identity.${table}`]);
+    return rows[0]?.ok != null;
+  };
+  return {
+    sessions: await sweepExpiredSessions(db, now),
+    passwordResetTokens: await count(
+      'DELETE FROM identity.password_reset_tokens WHERE expires_at <= $1 RETURNING token_hash',
+      [now],
+    ),
+    emailVerificationTokens: await count(
+      'DELETE FROM identity.email_verification_tokens WHERE expires_at <= $1 RETURNING token_hash',
+      [now],
+    ),
+    pendingLogins: (await exists('pending_logins'))
+      ? await count('DELETE FROM identity.pending_logins WHERE expires_at <= $1 RETURNING token_hash', [now])
+      : 0,
+    rateLimits: (await exists('rate_limits'))
+      ? await count('DELETE FROM identity.rate_limits WHERE updated_at <= $1 RETURNING key', [
+          new Date(now.getTime() - RATE_LIMIT_IDLE_MS),
+        ])
+      : 0,
+  };
+}
+
 // --- cookies ----------------------------------------------------------------
 
 /** `__Host-` is refused by the browser unless the cookie is also Secure, so the
  *  name follows `cookieSecure`; production (Secure on) always gets the prefix. */
-export const cookieName = (config: IdentityConfig): string =>
-  config.cookieSecure ? '__Host-session' : 'session';
+export const cookieName = (config: IdentityConfig): string => (config.cookieSecure ? '__Host-session' : 'session');
 
 /**
  * The Set-Cookie value. `__Host-` requires Secure, Path=/ and no Domain — that

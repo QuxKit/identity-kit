@@ -84,9 +84,11 @@ with clean seams.
 
 ```ts
 import { createIdentity } from '@quxkit/identity-kit';
+import { pgExecutor } from '@quxkit/identity-kit/pg';   // the shipped node-postgres adapter
+import pg from 'pg';
 
 const identity = createIdentity({
-  db,                                   // any SqlExecutor (a pg.Pool adapter is ~15 lines)
+  db: pgExecutor(new pg.Pool({ connectionString: process.env.DATABASE_URL })),
   mail: { send: (m) => myTransport(m) }, // you own the relay; the library writes the body
   config: {
     pepper: process.env.AUTH_PEPPER!,   // an HMAC key kept OUT of the database
@@ -102,7 +104,14 @@ const result = await identity.login({ email, password });
 if (result.kind === 'session') setCookie(identity.sessionCookie(result.token, result.expiresAt));
 ```
 
-Apply the schema first: `psql -f node_modules/identity-kit/sql/001_identity.sql`.
+Apply the schema first: `psql -f node_modules/@quxkit/identity-kit/sql/001_identity.sql`
+and `sql/005_hardening.sql` (both re-runnable; see [Schema](#schema)).
+
+`db` is any `SqlExecutor` — two methods, `query` and `transaction`. The `./pg`
+subpath ships one over a `pg.Pool` (pinned-connection transactions, savepoints
+for nesting); `pg` is an optional peer dependency, so an app on another driver
+pays nothing for it. A runnable end-to-end version of this quickstart lives in
+[`examples/password-login`](examples/password-login/).
 
 ## What it does carefully
 
@@ -124,6 +133,19 @@ way to "secure" — so the reasoning is in the code. The load-bearing parts:
   left live by a recognised-failures-only rule.
 - **Lockout is exponential backoff, not a hard lock** — a hard per-account lock
   is a denial-of-service anyone who knows an address can point at its owner.
+  The failure counter is incremented in place (`failed_logins + 1 … RETURNING`),
+  so concurrent wrong passwords all count.
+- **A rate limiter sits in front of the expensive paths** — signup, login
+  (keyed by address + IP), reset request, verification resend, MFA verify — and
+  runs before any hashing, so a limited request costs the server nothing. See
+  [Rate limiting](#rate-limiting).
+- **Sessions can rotate** — `rotateSession(token)` gives a live session a fresh
+  identifier; with `rotateSessions: true` the sliding renewal and a password or
+  MFA change on the current session rotate it automatically. See
+  [Session rotation](#session-rotation).
+- **MFA enrolment needs recent authentication** — a password, or a session that
+  proved one inside `reauthWindowMs` (default ten minutes) — so a hijacked
+  browser session cannot quietly enrol an attacker's authenticator.
 
 ## What it delegates
 
@@ -138,6 +160,75 @@ way to "secure" — so the reasoning is in the code. The load-bearing parts:
   and CSRF-protected is the host's. (Cookie helpers are provided, config-driven,
   and entirely optional.)
 
+## Rate limiting
+
+```ts
+import { createIdentity, createMemoryRateLimiter, createPgRateLimiter } from '@quxkit/identity-kit';
+
+createIdentity({ db, mail, config });                       // default: Postgres token bucket over `db`
+createIdentity({ db, mail, config, rateLimiter: null });    // off
+createIdentity({ db, mail, config, rateLimiter: createMemoryRateLimiter() });   // single process / tests
+createIdentity({ db, mail, config, rateLimiter: createPgRateLimiter({ db, rules: { login: { limit: 5, windowMs: 60_000 } } }) });
+```
+
+The seam is `RateLimiter { hit(key, cost?) -> { allowed, retryAfterMs } }`;
+bring your own (Redis, an edge limiter) by implementing it. Keys are
+`<action>:<subject>` and the action picks the rule, so one limiter covers every
+path. Defaults (`DEFAULT_RATE_LIMITS`): signup 10/hour, login 10/5 min per
+address + IP, reset request 5/hour, verification resend 5/hour, MFA verify
+10/min per user (`createMfa` takes the same `rateLimiter` option). A refused hit throws `IdentityError` with code `rate_limited`
+and `retryAfterMs`. Pass the caller's IP as `SignupInput.ipAddress` and
+`SessionMeta.ipAddress` so the keys include it. The Postgres implementation
+needs `sql/005_hardening.sql`; `sweepExpired()` prunes idle buckets.
+
+## Session rotation
+
+`identity.rotateSession(token)` returns a new token for the same session (same
+user, expiry, metadata) and kills the old one at once. With
+`config.rotateSessions: true`:
+
+- `resolveSession` rotates when it renews the idle window and returns the new
+  token as `rotated` — **set it as the cookie**; `tokenHash` is already the new
+  hash;
+- `changePassword(..., keepSessionHash)` rotates the kept session and returns it
+  as `rotated`, with `authenticatedAt` refreshed.
+
+`confirmTotpEnrolment` / `removeTotp` take a `keepSessionHash` too and always
+rotate it (they used to revoke everything). The flag defaults to off so a host
+that ignores the return values keeps working; turn it on once yours re-sets the
+cookie.
+
+## Housekeeping
+
+`identity.sweepExpired()` runs every sweeper in one call — expired sessions,
+reset and verification tokens, pending logins, idle rate-limit buckets — and
+returns the counts. Expiry is always checked on read; this only frees rows.
+`purgeUnverified()` and `purgeDeleted()` are separate because they delete
+accounts.
+
+## Errors
+
+Failures are one class, `IdentityError`, carrying a discriminated union
+(`error.failure`, `error.code`); narrow with `IdentityError.hasCode(e, 'x')`.
+What is **not** an error: an already-registered address (enumeration safety is
+a property of the return types).
+
+| Code | Thrown by | Meaning |
+|---|---|---|
+| `weak_password` | signup, changePassword | fails `passwordProblem`; `reason` says why |
+| `bad_credentials` | changePassword, removeTotp | current password wrong |
+| `no_password` | changePassword, removeTotp | passwordless (OAuth-only) account |
+| `pepper_version` | any verify | hash made under a pepper this process does not hold; add it to `config.previousPeppers` |
+| `not_found` | requestDeletion, beginTotpEnrolment, removeTotp | no such user |
+| `rate_limited` | signup, login, requestPasswordReset, resendVerification, verifyTotp, verifyRecoveryCode | limiter refused; `retryAfterMs` |
+| `reauth_required` | beginTotpEnrolment | proof missing, wrong, stale or for another user |
+| `enrolment_not_started` | confirmTotpEnrolment | no factor to confirm |
+| `invalid_code` | confirmTotpEnrolment | the TOTP code did not verify |
+| `totp_key_version` | MFA verify | secret sealed under a key version not in `totp.previousKeys` |
+| `invalid_config` | createMfa, createApiKeys | malformed key / prefix at construction |
+| `unknown_provider` | oidc begin/complete | no provider registered under that name |
+| `no_id_token` | oidc complete | the token response had no ID token |
+
 ## Opt-in modules
 
 Separate entry points, so an app that wants neither compiles neither.
@@ -150,7 +241,16 @@ import { createMfa } from '@quxkit/identity-kit/mfa';
 const mfa = createMfa({ db, config, mail, totp: { key: process.env.TOTP_KEY!, keyVersion: 1, issuer: 'Acme' } });
 const identity = createIdentity({ db, config, mail, secondFactor: mfa.secondFactor });
 // now login() returns { kind: 'mfa_required', pendingToken } for an enrolled user
+
+// enrolment needs recent authentication: the password, or a session that logged in recently
+const { uri, secret } = await mfa.beginTotpEnrolment(userId, { sessionToken });   // or { password }
+const { recoveryCodes, rotated } = await mfa.confirmTotpEnrolment(userId, code, undefined, currentSessionHash);
 ```
+
+Rotate the seal key by bumping `keyVersion`, moving the old key to
+`totp.previousKeys: { 1: OLD_KEY }`; each secret is re-sealed under the current
+key on its next successful verification, and the old entry can go once no row
+carries `key_version = 1`.
 
 The TOTP secret is **encrypted** (AES-256-GCM) under a key held outside the
 database — the one auth secret that cannot be one-way. `lastUsedStep` rejects a
@@ -216,17 +316,28 @@ gets). Apply `sql/004_oidc.sql`. SAML stays out of scope.
 Everything lives in an `identity` schema so it cannot collide with a host
 application's `users` table. `sql/001_identity.sql` declares `users`, `sessions`,
 `email_verification_tokens` and `password_reset_tokens`; `002_mfa.sql`,
-`003_apikeys.sql` and `004_oidc.sql` add the opt-in modules' tables. All cascade
-on delete.
+`003_apikeys.sql` and `004_oidc.sql` add the opt-in modules' tables;
+`005_hardening.sql` adds `users.last_failed_at`, `sessions.authenticated_at` and
+the `rate_limits` table (required by the core). All cascade on delete; every
+file is re-runnable, applied in order:
+
+```sh
+for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening; do
+  psql -v ON_ERROR_STOP=1 -f "node_modules/@quxkit/identity-kit/sql/$f.sql"
+done
+```
 
 ## Development
 
 ```sh
 pnpm install
-pnpm typecheck
 createdb identity_kit_test   # the tests exercise real SQL; they skip without a DB
-pnpm test
+pnpm lint && pnpm typecheck && pnpm build && pnpm test
+pnpm test:coverage           # the same under c8; thresholds in .c8rc.json
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the issue → branch → PR workflow and
+[SECURITY.md](SECURITY.md) for how to report a vulnerability privately.
 
 The tests assert the security properties against a real Postgres — the token
 burned in the same transaction as the write, the unique constraint on email, the

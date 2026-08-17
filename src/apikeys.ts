@@ -11,6 +11,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { base32, crc32 } from './encoding.ts';
+import { IdentityError } from './errors.ts';
 import { sha256 } from './tokens.ts';
 import type { Clock, SqlExecutor } from './types.ts';
 
@@ -60,6 +61,8 @@ export interface ApiKeySummary {
   createdAt: Date;
   expiresAt: Date | null;
   lastUsedAt: Date | null;
+  /** Set by revokeApiKey. A revoked key stays listed (audit) and never resolves. */
+  revokedAt: Date | null;
 }
 
 export interface ApiKeys {
@@ -67,7 +70,9 @@ export interface ApiKeys {
   looksLikeKey(candidate: string): boolean;
   createApiKey(ownerId: string, input: CreateApiKeyInput): Promise<CreatedKey>;
   resolveApiKey(presented: string, now?: Date): Promise<KeyPrincipal | null>;
-  revokeApiKey(id: string): Promise<void>;
+  /** Soft revoke: sets `revoked_at`, effective on the next request. The row
+   *  stays for the audit trail; a second call is a no-op. */
+  revokeApiKey(id: string, now?: Date): Promise<void>;
   listApiKeys(ownerId: string): Promise<ApiKeySummary[]>;
 }
 
@@ -78,7 +83,12 @@ const LAST_USED_RESOLUTION_MS = 60_000;
 export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
   const { db, prefix } = opts;
   const clock: Clock = opts.clock ?? (() => new Date());
-  if (!/^[a-z0-9]+$/.test(prefix)) throw new Error('apikeys: prefix must be lower-case letters and digits');
+  if (!/^[a-z0-9]+$/.test(prefix)) {
+    throw new IdentityError({
+      code: 'invalid_config',
+      reason: 'apikeys: prefix must be lower-case letters and digits',
+    });
+  }
 
   const shape = new RegExp(`^${prefix}_(live|test)_([A-Z2-7]{52})_([A-Z2-7]{7})$`);
 
@@ -115,8 +125,17 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
       const rows = await db.query<{ id: string }>(
         `INSERT INTO identity.api_keys (owner_id, key_hash, display_prefix, name, scopes, created_by, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-        [ownerId, sha256(key), displayPrefix, input.name, [...(input.scopes ?? [])], input.createdBy ?? null, input.expiresAt ?? null],
+        [
+          ownerId,
+          sha256(key),
+          displayPrefix,
+          input.name,
+          [...(input.scopes ?? [])],
+          input.createdBy ?? null,
+          input.expiresAt ?? null,
+        ],
       );
+      // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING yields exactly one row
       return { id: rows[0]!.id, key, displayPrefix };
     },
 
@@ -144,10 +163,10 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
       return { apiKeyId: row.id, ownerId: row.owner_id, scopes: row.scopes };
     },
 
-    /** Revocation is a DELETE, effective on the next request. Lookups are not
-     *  cached; if they ever are, the TTL is the revocation window. */
-    async revokeApiKey(id) {
-      await db.query('DELETE FROM identity.api_keys WHERE id = $1', [id]);
+    /** Effective on the next request. Lookups are not cached; if they ever
+     *  are, the TTL is the revocation window. */
+    async revokeApiKey(id, now = clock()) {
+      await db.query('UPDATE identity.api_keys SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL', [id, now]);
     },
 
     async listApiKeys(ownerId) {
@@ -159,8 +178,9 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
         created_at: Date;
         expires_at: Date | null;
         last_used_at: Date | null;
+        revoked_at: Date | null;
       }>(
-        `SELECT id, name, display_prefix, scopes, created_at, expires_at, last_used_at
+        `SELECT id, name, display_prefix, scopes, created_at, expires_at, last_used_at, revoked_at
            FROM identity.api_keys WHERE owner_id = $1 ORDER BY created_at DESC`,
         [ownerId],
       );
@@ -172,6 +192,7 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
         createdAt: r.created_at,
         expiresAt: r.expires_at,
         lastUsedAt: r.last_used_at,
+        revokedAt: r.revoked_at,
       }));
     },
   };

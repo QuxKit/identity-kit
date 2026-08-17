@@ -14,11 +14,13 @@
 import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Secret, TOTP } from 'otpauth';
 
-import { createCredentials, type Credentials } from './credentials.ts';
-import { createMailer, type Mailer } from './mail.ts';
+import { type Credentials, createCredentials } from './credentials.ts';
 import { randomBase32 } from './encoding.ts';
+import { IdentityError } from './errors.ts';
+import { createMailer, type Mailer } from './mail.ts';
+import { createPgRateLimiter, limiterKey, type RateLimiter } from './ratelimit.ts';
 import { finishLogin } from './session-login.ts';
-import { revokeAllSessions } from './sessions.ts';
+import { resolveSession, revokeAllSessions, rotateSession } from './sessions.ts';
 import { expiresIn, issueToken, sha256 } from './tokens.ts';
 import type {
   Clock,
@@ -51,7 +53,14 @@ export interface TotpConfig {
   /** 32-byte AES key as 64 hex chars (`openssl rand -hex 32`). Held OUTSIDE the
    *  database — it is what a leaked backup does not include. */
   key: string;
+  /** Stamped on secrets sealed with `key`. Bump it when the key rotates. */
   keyVersion: number;
+  /**
+   * Retired keys by version, so a secret sealed under an older key still
+   * unseals; on the next successful TOTP verification it is re-sealed under the
+   * current key. Drop a version from here only once no row carries it.
+   */
+  previousKeys?: Record<number, string>;
   /** Shown in the authenticator app entry (`issuer:label`). */
   issuer: string;
 }
@@ -63,7 +72,23 @@ export interface MfaOptions {
   totp: TotpConfig;
   clock?: Clock;
   logger?: Logger;
+  /** Asked before each TOTP / recovery-code verification, keyed by user — a
+   *  ceiling across pending tokens on top of the five-guess bound per token.
+   *  Omit for the shipped Postgres limiter over `db`; `null` disables. */
+  rateLimiter?: RateLimiter | null;
 }
+
+/**
+ * Proof of recent authentication, required to begin TOTP enrolment: either the
+ * password, or a session token whose holder authenticated within
+ * `config.reauthWindowMs` (default ten minutes). Without it, a session hijacked
+ * from a logged-in browser could quietly enrol the attacker's authenticator.
+ */
+export type EnrolmentProof = { password: string } | { sessionToken: string };
+
+/** Ten minutes: long enough to get from the login page to security settings,
+ *  short enough that a session left open is not a standing licence to enrol. */
+export const DEFAULT_REAUTH_WINDOW_MS = 10 * 60 * 1000;
 
 export interface Enrolment {
   /** For a QR code. Contains the secret — never log it, never store it. */
@@ -79,13 +104,33 @@ export type SecondFactorResult =
    *  that actually defeats brute force against six digits. */
   | { kind: 'restart' };
 
+/** What an MFA change reports. `rotated` is present when a `keepSessionHash`
+ *  was given: that session survives with a new token the host must set. */
+export interface MfaChanged {
+  recoveryCodes: string[];
+  rotated?: { token: string; tokenHash: string; expiresAt: Date };
+}
+
 export interface Mfa {
   /** Plug this into `createIdentity({ secondFactor })`. */
   secondFactor: SecondFactor;
   issuePendingLogin(userId: UserId, now?: Date): Promise<string>;
-  beginTotpEnrolment(userId: UserId): Promise<Enrolment>;
-  confirmTotpEnrolment(userId: UserId, code: string, now?: Date): Promise<string[]>;
-  removeTotp(userId: UserId, password: string): Promise<void>;
+  /** Requires recent authentication — see `EnrolmentProof`. Throws
+   *  `reauth_required` when the proof is missing, stale or wrong. */
+  beginTotpEnrolment(userId: UserId, proof: EnrolmentProof, now?: Date): Promise<Enrolment>;
+  /**
+   * Confirm with a code; returns the recovery codes. Every session is revoked
+   * except `keepSessionHash`, which is rotated instead (the change is a
+   * privilege change on that session) and handed back as `rotated`.
+   */
+  confirmTotpEnrolment(userId: UserId, code: string, now?: Date, keepSessionHash?: string): Promise<MfaChanged>;
+  /** Same session policy as confirmTotpEnrolment. */
+  removeTotp(
+    userId: UserId,
+    password: string,
+    keepSessionHash?: string,
+    now?: Date,
+  ): Promise<{ rotated?: MfaChanged['rotated'] }>;
   verifyTotp(pendingToken: string, code: string, meta?: SessionMeta, now?: Date): Promise<SecondFactorResult>;
   verifyRecoveryCode(pendingToken: string, code: string, meta?: SessionMeta, now?: Date): Promise<SecondFactorResult>;
   remainingRecoveryCodes(userId: UserId): Promise<number>;
@@ -95,9 +140,21 @@ interface TotpRow {
   secret_cipher: Buffer;
   secret_iv: Buffer;
   secret_tag: Buffer;
+  key_version: number;
   last_used_step: string;
   confirmed_at: Date | null;
 }
+
+const parseKey = (hex: string, what: string): Buffer => {
+  const key = Buffer.from(hex, 'hex');
+  if (key.length !== 32) {
+    throw new IdentityError({
+      code: 'invalid_config',
+      reason: `mfa: ${what} must be 32 bytes as 64 hex chars (openssl rand -hex 32)`,
+    });
+  }
+  return key;
+};
 
 export function createMfa(opts: MfaOptions): Mfa {
   const { db, config, totp } = opts;
@@ -106,10 +163,14 @@ export function createMfa(opts: MfaOptions): Mfa {
   const mailer: Mailer = createMailer(config, opts.mail);
   const warn = (m: string) => opts.logger?.warn(m);
 
-  const key = Buffer.from(totp.key, 'hex');
-  if (key.length !== 32) {
-    throw new Error('mfa: totp.key must be 32 bytes as 64 hex chars (openssl rand -hex 32)');
+  // The keyring: the current key under its version, plus any retired ones.
+  const keyring = new Map<number, Buffer>();
+  for (const [version, hex] of Object.entries(totp.previousKeys ?? {})) {
+    keyring.set(Number(version), parseKey(hex, `totp.previousKeys[${version}]`));
   }
+  const key = parseKey(totp.key, 'totp.key');
+  keyring.set(totp.keyVersion, key);
+  const reauthWindowMs = config.reauthWindowMs ?? DEFAULT_REAUTH_WINDOW_MS;
 
   const seal = (secretBase32: string): { cipher: Buffer; iv: Buffer; tag: Buffer } => {
     const iv = randomBytes(12);
@@ -117,10 +178,42 @@ export function createMfa(opts: MfaOptions): Mfa {
     const cipher = Buffer.concat([c.update(secretBase32, 'utf8'), c.final()]);
     return { cipher, iv, tag: c.getAuthTag() };
   };
+  /** Selects the key by the row's version, so a rotation is a config change
+   *  and a re-seal on next use, never a forced re-enrolment. */
   const unseal = (row: TotpRow): string => {
-    const d = createDecipheriv('aes-256-gcm', key, row.secret_iv);
+    const k = keyring.get(row.key_version);
+    if (!k) {
+      throw new IdentityError({ code: 'totp_key_version', stored: row.key_version, held: [...keyring.keys()] });
+    }
+    const d = createDecipheriv('aes-256-gcm', k, row.secret_iv);
     d.setAuthTag(row.secret_tag);
     return Buffer.concat([d.update(row.secret_cipher), d.final()]).toString('utf8');
+  };
+  /** Re-seal under the current key — the moment the plaintext is in hand. */
+  const resealIfStale = async (userId: UserId, row: TotpRow, secret: string): Promise<void> => {
+    if (row.key_version === totp.keyVersion) return;
+    const sealed = seal(secret);
+    await db.query(
+      `UPDATE identity.totp_factors
+          SET secret_cipher = $2, secret_iv = $3, secret_tag = $4, key_version = $5
+        WHERE user_id = $1 AND key_version = $6`,
+      [userId, sealed.cipher, sealed.iv, sealed.tag, totp.keyVersion, row.key_version],
+    );
+  };
+
+  const rateLimiter = opts.rateLimiter === undefined ? createPgRateLimiter({ db, clock }) : opts.rateLimiter;
+  const limit = async (key: string): Promise<void> => {
+    if (!rateLimiter) return;
+    const decision = await rateLimiter.hit(key);
+    if (!decision.allowed) throw new IdentityError({ code: 'rate_limited', retryAfterMs: decision.retryAfterMs, key });
+  };
+
+  /** Revoke every session but `keep`, and rotate `keep` — an MFA change is a
+   *  privilege change on the session that made it. */
+  const revokeOthersAndRotate = async (userId: UserId, keep: string | undefined, now: Date) => {
+    await revokeAllSessions(db, userId, keep);
+    if (!keep) return undefined;
+    return (await rotateSession(db, keep, now, { authenticatedAt: now })) ?? undefined;
   };
 
   const totpFor = (secretBase32: string, label: string) =>
@@ -159,10 +252,11 @@ export function createMfa(opts: MfaOptions): Mfa {
     await db.transaction(async (tx) => {
       // One live pending login per user.
       await tx.query('DELETE FROM identity.pending_logins WHERE user_id = $1', [userId]);
-      await tx.query(
-        'INSERT INTO identity.pending_logins (token_hash, user_id, expires_at) VALUES ($1, $2, $3)',
-        [hash, userId, expiresIn(PENDING_TTL_S, now)],
-      );
+      await tx.query('INSERT INTO identity.pending_logins (token_hash, user_id, expires_at) VALUES ($1, $2, $3)', [
+        hash,
+        userId,
+        expiresIn(PENDING_TTL_S, now),
+      ]);
     });
     return plaintext;
   };
@@ -191,6 +285,7 @@ export function createMfa(opts: MfaOptions): Mfa {
         'UPDATE identity.pending_logins SET attempts = attempts + 1 WHERE token_hash = $1 RETURNING attempts',
         [tokenHash],
       );
+      // biome-ignore lint/style/noNonNullAssertion: UPDATE … RETURNING on the row just read inside the transaction
       return { kind: 'ok', userId: row.user_id, tokenHash, attempt: updated[0]!.attempts };
     });
   };
@@ -214,10 +309,37 @@ export function createMfa(opts: MfaOptions): Mfa {
 
   const readFactor = async (userId: UserId): Promise<TotpRow | null> => {
     const rows = await db.query<TotpRow>(
-      'SELECT secret_cipher, secret_iv, secret_tag, last_used_step, confirmed_at FROM identity.totp_factors WHERE user_id = $1',
+      `SELECT secret_cipher, secret_iv, secret_tag, key_version, last_used_step, confirmed_at
+         FROM identity.totp_factors WHERE user_id = $1`,
       [userId],
     );
     return rows[0] ?? null;
+  };
+
+  const readPassword = async (userId: UserId) => {
+    const rows = await db.query<{ password_hash: string | null; pepper_version: number }>(
+      'SELECT password_hash, pepper_version FROM identity.users WHERE id = $1',
+      [userId],
+    );
+    return rows[0] ?? null;
+  };
+
+  /** Fresh proof of a credential, or `reauth_required`. Both branches burn the
+   *  same argon2 work as a real check when a password is offered. */
+  const requireRecentAuth = async (userId: UserId, proof: EnrolmentProof, now: Date): Promise<void> => {
+    if ('password' in proof) {
+      const user = await readPassword(userId);
+      const ok = user?.password_hash
+        ? await credentials.verifyPassword(user.password_hash, proof.password, user.pepper_version)
+        : await credentials.verifyAgainstDummy(proof.password);
+      if (!ok) throw new IdentityError({ code: 'reauth_required' });
+      return;
+    }
+    const session = await resolveSession(db, proof.sessionToken, now);
+    if (!session || session.userId !== userId) throw new IdentityError({ code: 'reauth_required' });
+    if (now.getTime() - session.authenticatedAt.getTime() > reauthWindowMs) {
+      throw new IdentityError({ code: 'reauth_required' });
+    }
   };
 
   return {
@@ -238,9 +360,10 @@ export function createMfa(opts: MfaOptions): Mfa {
      * requires a verified code, or a mis-scanned QR enables MFA against a secret
      * the user does not hold and bricks the account at the next login.
      */
-    async beginTotpEnrolment(userId) {
+    async beginTotpEnrolment(userId, proof, now = clock()) {
+      await requireRecentAuth(userId, proof, now);
       const email = await userEmail(userId);
-      if (!email) throw new Error('no such user');
+      if (!email) throw new IdentityError({ code: 'not_found', what: `user ${userId}` });
       const secret = randomBase32(20);
       const sealed = seal(secret);
       await db.query(
@@ -257,11 +380,11 @@ export function createMfa(opts: MfaOptions): Mfa {
 
     /** Confirm enrolment with a code, and hand back recovery codes (argon2id-
      *  hashed). Enrolling a second factor revokes every existing session. */
-    async confirmTotpEnrolment(userId, code, now = clock()) {
+    async confirmTotpEnrolment(userId, code, now = clock(), keepSessionHash) {
       const factor = await readFactor(userId);
-      if (!factor) throw new Error('enrolment has not been started');
+      if (!factor) throw new IdentityError({ code: 'enrolment_not_started' });
       const hit = checkCode(unseal(factor), code, now);
-      if (!hit) throw new Error('that code is not valid');
+      if (!hit) throw new IdentityError({ code: 'invalid_code' });
 
       const codes = Array.from({ length: RECOVERY_CODE_COUNT }, () => randomBase32(10));
       const hashes = await Promise.all(codes.map((c) => credentials.hashPassword(c)));
@@ -274,39 +397,44 @@ export function createMfa(opts: MfaOptions): Mfa {
         ]);
         await tx.query('DELETE FROM identity.recovery_codes WHERE user_id = $1', [userId]);
         for (const codeHash of hashes) {
-          await tx.query('INSERT INTO identity.recovery_codes (user_id, code_hash) VALUES ($1, $2)', [userId, codeHash]);
+          await tx.query('INSERT INTO identity.recovery_codes (user_id, code_hash) VALUES ($1, $2)', [
+            userId,
+            codeHash,
+          ]);
         }
       });
-      await revokeAllSessions(db, userId);
-      return codes;
+      const rotated = await revokeOthersAndRotate(userId, keepSessionHash, now);
+      return { recoveryCodes: codes, rotated };
     },
 
-    async removeTotp(userId, password) {
-      const rows = await db.query<{ password_hash: string | null; pepper_version: number }>(
-        'SELECT password_hash, pepper_version FROM identity.users WHERE id = $1',
-        [userId],
-      );
-      const user = rows[0];
-      if (!user?.password_hash) throw new Error('no such user');
+    async removeTotp(userId, password, keepSessionHash, now = clock()) {
+      const user = await readPassword(userId);
+      if (!user) throw new IdentityError({ code: 'not_found', what: `user ${userId}` });
+      if (!user.password_hash) throw new IdentityError({ code: 'no_password' });
       if (!(await credentials.verifyPassword(user.password_hash, password, user.pepper_version))) {
-        throw new Error('password is incorrect');
+        throw new IdentityError({ code: 'bad_credentials' });
       }
       await db.transaction(async (tx) => {
         await tx.query('DELETE FROM identity.totp_factors WHERE user_id = $1', [userId]);
         await tx.query('DELETE FROM identity.recovery_codes WHERE user_id = $1', [userId]);
       });
-      await revokeAllSessions(db, userId);
+      const rotated = await revokeOthersAndRotate(userId, keepSessionHash, now);
+      return { rotated };
     },
 
     async verifyTotp(pendingToken, code, meta = {}, now = clock()) {
       const pending = await chargeAttempt(pendingToken, now);
       if (pending.kind === 'exhausted') return { kind: 'restart' };
       if (pending.kind === 'invalid') return { kind: 'failed' };
+      // After the attempt is charged (the token pays regardless), before the
+      // factor is read: a per-user ceiling across pending tokens.
+      await limit(limiterKey('mfa_verify', pending.userId, meta.ipAddress));
 
       const factor = await readFactor(pending.userId);
       if (!factor?.confirmed_at) return failFactor(pending);
 
-      const hit = checkCode(unseal(factor), code, now);
+      const secret = unseal(factor);
+      const hit = checkCode(secret, code, now);
       // A code is valid for up to ninety seconds across the window. Without this
       // comparison an attacker who phishes a code in real time can reuse it
       // inside that window. One integer column, one whole class of attack closed.
@@ -314,6 +442,7 @@ export function createMfa(opts: MfaOptions): Mfa {
 
       const email = await userEmail(pending.userId);
       if (!email) return failFactor(pending);
+      await resealIfStale(pending.userId, factor, secret);
 
       await db.transaction(async (tx) => {
         await tx.query('UPDATE identity.totp_factors SET last_used_step = $2 WHERE user_id = $1', [
@@ -329,6 +458,7 @@ export function createMfa(opts: MfaOptions): Mfa {
       const pending = await chargeAttempt(pendingToken, now);
       if (pending.kind === 'exhausted') return { kind: 'restart' };
       if (pending.kind === 'invalid') return { kind: 'failed' };
+      await limit(limiterKey('mfa_verify', pending.userId, meta.ipAddress));
 
       const candidate = code.replace(/[\s-]/g, '').toUpperCase();
       const unused = await db.query<{ id: string; code_hash: string }>(
@@ -336,15 +466,14 @@ export function createMfa(opts: MfaOptions): Mfa {
         [pending.userId],
       );
 
-      // Linear over at most ten argon2 verifications: slow and irrelevant, this
-      // runs a handful of times per account per lifetime and is bounded by the
-      // pending-login attempt counter, not by speed.
+      // Every unused code is verified — no early exit on a match — so the time
+      // taken does not reveal which position matched or whether any did. At most
+      // ten argon2 verifications, a handful of times per account per lifetime;
+      // the guess bound is the pending-login attempt counter, not speed.
       let matched: string | null = null;
       for (const row of unused) {
-        if (await credentials.verifyPassword(row.code_hash, candidate, config.pepperVersion)) {
-          matched = row.id;
-          break;
-        }
+        const ok = await credentials.verifyPassword(row.code_hash, candidate, config.pepperVersion);
+        if (ok && matched === null) matched = row.id;
       }
       if (!matched) return failFactor(pending);
 
@@ -357,7 +486,9 @@ export function createMfa(opts: MfaOptions): Mfa {
       });
       // An unexpected one of these is a takeover in progress, and the mail is the
       // only place the user would find out.
-      await mailer.recoveryCodeUsed(email, unused.length - 1).catch((e) => warn(`recovery-code mail failed: ${String(e)}`));
+      await mailer
+        .recoveryCodeUsed(email, unused.length - 1)
+        .catch((e) => warn(`recovery-code mail failed: ${String(e)}`));
       return finishLogin(db, mailer, pending.userId, email, meta, now, opts.logger);
     },
 
@@ -366,6 +497,7 @@ export function createMfa(opts: MfaOptions): Mfa {
         'SELECT count(*)::text AS n FROM identity.recovery_codes WHERE user_id = $1 AND used_at IS NULL',
         [userId],
       );
+      // biome-ignore lint/style/noNonNullAssertion: count(*) always returns one row
       return Number(rows[0]!.n);
     },
   };

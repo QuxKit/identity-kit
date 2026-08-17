@@ -23,8 +23,7 @@ export interface IssuedToken {
   hash: string;
 }
 
-export const sha256 = (value: string): string =>
-  createHash('sha256').update(value, 'utf8').digest('hex');
+export const sha256 = (value: string): string => createHash('sha256').update(value, 'utf8').digest('hex');
 
 export const issueToken = (): IssuedToken => {
   const plaintext = randomBytes(32).toString('base64url');
@@ -33,5 +32,4 @@ export const issueToken = (): IssuedToken => {
 
 /** `seconds` from `from`. `from` is passed in so expiry is a function of the
  *  injected clock, never a hidden `new Date()`. */
-export const expiresIn = (seconds: number, from: Date): Date =>
-  new Date(from.getTime() + seconds * 1000);
+export const expiresIn = (seconds: number, from: Date): Date => new Date(from.getTime() + seconds * 1000);

@@ -7,8 +7,8 @@
 // new-device notification or the fresh identifier and nobody notices until it
 // matters.
 
-import { createSession } from './sessions.ts';
 import type { Mailer } from './mail.ts';
+import { createSession } from './sessions.ts';
 import type { Logger, SessionMeta, SqlExecutor, UserId } from './types.ts';
 
 export async function finishLogin(
@@ -28,6 +28,7 @@ export async function finishLogin(
       'SELECT count(*)::text AS n FROM identity.sessions WHERE user_id = $1 AND user_agent = $2',
       [userId, meta.userAgent],
     );
+    // biome-ignore lint/style/noNonNullAssertion: count(*) always returns one row
     seenBefore = Number(rows[0]!.n) > 0;
   }
 
