@@ -85,6 +85,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsup",
     "test": "tsx --test --test-concurrency=1 test/*.test.ts",
+    "test:coverage": "c8 pnpm test",
     "prepack": "pnpm run build"
   },
   "dependencies": {
