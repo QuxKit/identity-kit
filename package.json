@@ -8,9 +8,9 @@
   "sideEffects": false,
   "repository": {
     "type": "git",
-    "url": "git+http://localhost:3003/brett/identity-kit.git"
+    "url": "git+https://github.com/QuxKit/identity-kit.git"
   },
-  "homepage": "http://localhost:3003/brett/identity-kit#readme",
+  "homepage": "https://github.com/QuxKit/identity-kit#readme",
   "keywords": [
     "authentication",
     "identity",
@@ -100,5 +100,8 @@
   },
   "publishConfig": {
     "access": "restricted"
+  },
+  "bugs": {
+    "url": "https://github.com/QuxKit/identity-kit/issues"
   }
 }
