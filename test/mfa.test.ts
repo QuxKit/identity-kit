@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 import { Secret, TOTP } from 'otpauth';
 
-import { createIdentity } from '../src/index.ts';
+import { createIdentity, IdentityError } from '../src/index.ts';
 import { createMfa } from '../src/mfa.ts';
 import { type Harness, one, SKIP_REASON, setupDatabase, testConfig, testTotpKey, tokenFrom } from './harness.ts';
 
@@ -42,17 +42,20 @@ describe('identity-kit/mfa', { skip: harness === null ? SKIP_REASON : false }, (
 
   it('enrols with a verified code and returns recovery codes', async () => {
     const userId = await verifiedUser('mona@example.com', 'correct horse battery');
-    const { secret } = await mfa.beginTotpEnrolment(userId);
+    const { secret } = await mfa.beginTotpEnrolment(userId, { password: 'correct horse battery' });
     const t0 = new Date('2026-08-15T12:00:00Z');
-    const codes = await mfa.confirmTotpEnrolment(userId, codeFor(secret, t0), t0);
+    const { recoveryCodes: codes } = await mfa.confirmTotpEnrolment(userId, codeFor(secret, t0), t0);
     assert.equal(codes.length, 10);
     // a bad code at enrolment is rejected, so a mis-scanned QR does not brick it
-    await assert.rejects(() => mfa.confirmTotpEnrolment(userId, '000000', t0));
+    await assert.rejects(
+      () => mfa.confirmTotpEnrolment(userId, '000000', t0),
+      (e: unknown) => IdentityError.hasCode(e, 'invalid_code'),
+    );
   });
 
   it('login requires the second factor, and a fresh code completes it', async () => {
     const userId = await verifiedUser('nate@example.com', 'correct horse battery');
-    const { secret } = await mfa.beginTotpEnrolment(userId);
+    const { secret } = await mfa.beginTotpEnrolment(userId, { password: 'correct horse battery' });
     const t0 = new Date('2026-08-15T12:00:00Z');
     await mfa.confirmTotpEnrolment(userId, codeFor(secret, t0), t0);
 
@@ -68,7 +71,7 @@ describe('identity-kit/mfa', { skip: harness === null ? SKIP_REASON : false }, (
 
   it('rejects a replayed code inside its own window', async () => {
     const userId = await verifiedUser('olga@example.com', 'correct horse battery');
-    const { secret } = await mfa.beginTotpEnrolment(userId);
+    const { secret } = await mfa.beginTotpEnrolment(userId, { password: 'correct horse battery' });
     const t0 = new Date('2026-08-15T12:00:00Z');
     await mfa.confirmTotpEnrolment(userId, codeFor(secret, t0), t0);
 
@@ -85,9 +88,9 @@ describe('identity-kit/mfa', { skip: harness === null ? SKIP_REASON : false }, (
 
   it('accepts a recovery code once and warns by email', async () => {
     const userId = await verifiedUser('pat@example.com', 'correct horse battery');
-    const { secret } = await mfa.beginTotpEnrolment(userId);
+    const { secret } = await mfa.beginTotpEnrolment(userId, { password: 'correct horse battery' });
     const t0 = new Date('2026-08-15T12:00:00Z');
-    const codes = await mfa.confirmTotpEnrolment(userId, codeFor(secret, t0), t0);
+    const { recoveryCodes: codes } = await mfa.confirmTotpEnrolment(userId, codeFor(secret, t0), t0);
 
     h.mail.clear();
     const login = await id.login({ email: 'pat@example.com', password: 'correct horse battery' }, {}, t0);
@@ -104,7 +107,7 @@ describe('identity-kit/mfa', { skip: harness === null ? SKIP_REASON : false }, (
 
   it('bounds guesses: five wrong codes restart the login', async () => {
     const userId = await verifiedUser('quinn@example.com', 'correct horse battery');
-    const { secret } = await mfa.beginTotpEnrolment(userId);
+    const { secret } = await mfa.beginTotpEnrolment(userId, { password: 'correct horse battery' });
     const t0 = new Date('2026-08-15T12:00:00Z');
     await mfa.confirmTotpEnrolment(userId, codeFor(secret, t0), t0);
 
