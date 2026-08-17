@@ -176,7 +176,7 @@ bring your own (Redis, an edge limiter) by implementing it. Keys are
 `<action>:<subject>` and the action picks the rule, so one limiter covers every
 path. Defaults (`DEFAULT_RATE_LIMITS`): signup 10/hour, login 10/5 min per
 address + IP, reset request 5/hour, verification resend 5/hour, MFA verify
-10/min per user. A refused hit throws `IdentityError` with code `rate_limited`
+10/min per user (`createMfa` takes the same `rateLimiter` option). A refused hit throws `IdentityError` with code `rate_limited`
 and `retryAfterMs`. Pass the caller's IP as `SignupInput.ipAddress` and
 `SessionMeta.ipAddress` so the keys include it. The Postgres implementation
 needs `sql/005_hardening.sql`; `sweepExpired()` prunes idle buckets.

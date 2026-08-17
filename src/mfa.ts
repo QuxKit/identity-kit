@@ -18,7 +18,7 @@ import { type Credentials, createCredentials } from './credentials.ts';
 import { randomBase32 } from './encoding.ts';
 import { IdentityError } from './errors.ts';
 import { createMailer, type Mailer } from './mail.ts';
-import { limiterKey, type RateLimiter } from './ratelimit.ts';
+import { createPgRateLimiter, limiterKey, type RateLimiter } from './ratelimit.ts';
 import { finishLogin } from './session-login.ts';
 import { resolveSession, revokeAllSessions, rotateSession } from './sessions.ts';
 import { expiresIn, issueToken, sha256 } from './tokens.ts';
@@ -72,9 +72,9 @@ export interface MfaOptions {
   totp: TotpConfig;
   clock?: Clock;
   logger?: Logger;
-  /** Asked before each TOTP / recovery-code verification, keyed by user. Omit
-   *  to run without one here (login's limiter already meters the pending
-   *  tokens); pass a limiter to add a per-user ceiling across them. */
+  /** Asked before each TOTP / recovery-code verification, keyed by user — a
+   *  ceiling across pending tokens on top of the five-guess bound per token.
+   *  Omit for the shipped Postgres limiter over `db`; `null` disables. */
   rateLimiter?: RateLimiter | null;
 }
 
@@ -201,9 +201,10 @@ export function createMfa(opts: MfaOptions): Mfa {
     );
   };
 
+  const rateLimiter = opts.rateLimiter === undefined ? createPgRateLimiter({ db, clock }) : opts.rateLimiter;
   const limit = async (key: string): Promise<void> => {
-    if (!opts.rateLimiter) return;
-    const decision = await opts.rateLimiter.hit(key);
+    if (!rateLimiter) return;
+    const decision = await rateLimiter.hit(key);
     if (!decision.allowed) throw new IdentityError({ code: 'rate_limited', retryAfterMs: decision.retryAfterMs, key });
   };
 
