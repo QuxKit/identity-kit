@@ -92,12 +92,24 @@ export interface Harness {
   close(): Promise<void>;
 }
 
+/**
+ * Connect, rebuild the schema, and hand back the harness — or null when there is
+ * no database to talk to, so the suite skips with `SKIP_REASON`.
+ *
+ * Under `REQUIRE_DB=1` (CI) an unreachable database is a failure, not a skip: a
+ * broken service container must not turn the whole suite green.
+ */
 export async function setupDatabase(): Promise<Harness | null> {
   const pool = new pg.Pool({ connectionString: TEST_DATABASE_URL, max: 4 });
   try {
     await pool.query('SELECT 1');
-  } catch {
+  } catch (error) {
     await pool.end().catch(() => {});
+    if (process.env.REQUIRE_DB) {
+      throw new Error(
+        `REQUIRE_DB is set but the test database at ${TEST_DATABASE_URL} is unreachable: ${String(error)}`,
+      );
+    }
     return null;
   }
   await pool.query('DROP SCHEMA IF EXISTS identity CASCADE');
