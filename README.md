@@ -453,6 +453,17 @@ decision: **account linking**. The rule, tested directly against crafted claims:
 whole login, so the host mints the session (and decides what a new vs linked user
 gets). Apply `sql/004_oidc.sql`. SAML stays out of scope.
 
+Two provider flags exist for the awkward cases. `allowInsecureRequests` permits
+`http://` and is **loopback-only** (anything else is `invalid_config`), for a
+local Keycloak or Dex in development. `verifyIdTokenSignature` checks the ID
+token's JWS against the provider's JWKS; it is off by default because in the code
+flow the token arrives over a direct TLS connection to the token endpoint, which
+is what authenticates the issuer (OIDC Core 3.1.3.7) — and it is forced on
+whenever `allowInsecureRequests` is set, since there is then no TLS doing that
+job. The whole flow is exercised end to end in the tests against an in-process
+issuer (`test/mock-issuer.ts`: discovery, JWKS, authorize, token; RS256 via
+`node:crypto`, no extra dependency).
+
 ## Schema
 
 Everything lives in an `identity` schema so it cannot collide with a host

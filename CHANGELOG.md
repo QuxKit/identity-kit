@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `oidc`: provider flags `allowInsecureRequests` (loopback-only `http://`, for a
+  local Keycloak / Dex; anything else is `invalid_config`) and
+  `verifyIdTokenSignature` (JWS validation against the provider's JWKS — off by
+  default per OIDC Core 3.1.3.7, forced on when `allowInsecureRequests` is set).
+  `oidc.begin` / `complete` are now exercised end to end against an in-process
+  mock issuer (`test/mock-issuer.ts`, RS256 via `node:crypto`, no new
+  dependency), including PKCE / state / nonce mismatches, a wrong signing key,
+  a missing nonce claim and the account-takeover refusal.
+
 - **`@quxkit/identity-kit/http`** — `routes({ identity, config, mfa?, apiKeys?,
   magic?, passkeys?, basePath?, csrf? })`: framework-neutral handlers
   (`{ method, path, headers, body, ip }` → `{ status, headers, body }`, `null`
