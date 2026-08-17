@@ -20,8 +20,9 @@ import { IdentityError } from './errors.ts';
 import { recordEvent } from './events.ts';
 import { createMailer, type Mailer } from './mail.ts';
 import { createPgRateLimiter, limiterKey, type RateLimiter } from './ratelimit.ts';
+import { DEFAULT_REAUTH_WINDOW_MS, type EnrolmentProof, requireRecentAuth } from './reauth.ts';
 import { finishLogin } from './session-login.ts';
-import { resolveSession, revokeAllSessions, rotateSession } from './sessions.ts';
+import { revokeAllSessions, rotateSession } from './sessions.ts';
 import { expiresIn, issueToken, sha256 } from './tokens.ts';
 import type {
   Clock,
@@ -79,17 +80,10 @@ export interface MfaOptions {
   rateLimiter?: RateLimiter | null;
 }
 
-/**
- * Proof of recent authentication, required to begin TOTP enrolment: either the
- * password, or a session token whose holder authenticated within
- * `config.reauthWindowMs` (default ten minutes). Without it, a session hijacked
- * from a logged-in browser could quietly enrol the attacker's authenticator.
- */
-export type EnrolmentProof = { password: string } | { sessionToken: string };
-
-/** Ten minutes: long enough to get from the login page to security settings,
- *  short enough that a session left open is not a standing licence to enrol. */
-export const DEFAULT_REAUTH_WINDOW_MS = 10 * 60 * 1000;
+// Proof of recent authentication (the password, or a session that authenticated
+// within `config.reauthWindowMs`) is required to begin TOTP enrolment; it lives
+// in reauth.ts because passkey registration needs the same rule.
+export { DEFAULT_REAUTH_WINDOW_MS, type EnrolmentProof } from './reauth.ts';
 
 export interface Enrolment {
   /** For a QR code. Contains the secret — never log it, never store it. */
@@ -334,24 +328,6 @@ export function createMfa(opts: MfaOptions): Mfa {
     return rows[0] ?? null;
   };
 
-  /** Fresh proof of a credential, or `reauth_required`. Both branches burn the
-   *  same argon2 work as a real check when a password is offered. */
-  const requireRecentAuth = async (userId: UserId, proof: EnrolmentProof, now: Date): Promise<void> => {
-    if ('password' in proof) {
-      const user = await readPassword(userId);
-      const ok = user?.password_hash
-        ? await credentials.verifyPassword(user.password_hash, proof.password, user.pepper_version)
-        : await credentials.verifyAgainstDummy(proof.password);
-      if (!ok) throw new IdentityError({ code: 'reauth_required' });
-      return;
-    }
-    const session = await resolveSession(db, proof.sessionToken, now);
-    if (!session || session.userId !== userId) throw new IdentityError({ code: 'reauth_required' });
-    if (now.getTime() - session.authenticatedAt.getTime() > reauthWindowMs) {
-      throw new IdentityError({ code: 'reauth_required' });
-    }
-  };
-
   return {
     secondFactor: {
       pendingFor: async (userId, now) => {
@@ -371,7 +347,7 @@ export function createMfa(opts: MfaOptions): Mfa {
      * the user does not hold and bricks the account at the next login.
      */
     async beginTotpEnrolment(userId, proof, now = clock()) {
-      await requireRecentAuth(userId, proof, now);
+      await requireRecentAuth(db, credentials, userId, proof, now, reauthWindowMs);
       const email = await userEmail(userId);
       if (!email) throw new IdentityError({ code: 'not_found', what: `user ${userId}` });
       const secret = randomBase32(20);

@@ -17,6 +17,8 @@
     "user-management",
     "accounts",
     "sessions",
+    "passkeys",
+    "webauthn",
     "password",
     "argon2",
     "postgres",
@@ -58,6 +60,22 @@
       "import": "./dist/oidc.mjs",
       "require": "./dist/oidc.cjs"
     },
+    "./passkeys": {
+      "types": {
+        "import": "./dist/passkeys.d.ts",
+        "require": "./dist/passkeys.d.cts"
+      },
+      "import": "./dist/passkeys.mjs",
+      "require": "./dist/passkeys.cjs"
+    },
+    "./magic": {
+      "types": {
+        "import": "./dist/magic.d.ts",
+        "require": "./dist/magic.d.cts"
+      },
+      "import": "./dist/magic.mjs",
+      "require": "./dist/magic.cjs"
+    },
     "./pg": {
       "types": {
         "import": "./dist/pg.d.ts",
@@ -91,6 +109,7 @@
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.0",
+    "@simplewebauthn/server": "^13.3.2",
     "openid-client": "^6.8.5",
     "otpauth": "^9.3.0"
   },

@@ -155,8 +155,8 @@ way to "secure" — so the reasoning is in the code. The load-bearing parts:
 
 - **Mail transport** — the `MailSender` seam. The library composes every message
   (their shape is a security property); the host picks the relay.
-- **MFA, API keys, and OIDC** (Google / Apple / any OpenID provider) — shipped,
-  as separate opt-in entry points, the same way billing-kit splits metering from
+- **MFA, passkeys, magic links, API keys, and OIDC** (Google / Apple / any
+  OpenID provider) — shipped, as separate opt-in entry points, the same way billing-kit splits metering from
   providers (see below).
 - **SAML** — still out of scope; an enterprise-only protocol better served by a
   dedicated gateway.
@@ -180,7 +180,9 @@ bring your own (Redis, an edge limiter) by implementing it. Keys are
 `<action>:<subject>` and the action picks the rule, so one limiter covers every
 path. Defaults (`DEFAULT_RATE_LIMITS`): signup 10/hour, login 10/5 min per
 address + IP, reset request 5/hour, verification resend 5/hour, MFA verify
-10/min per user (`createMfa` takes the same `rateLimiter` option). A refused hit throws `IdentityError` with code `rate_limited`
+10/min per user, passkey assertion 20/min per IP, magic-link request 5/hour per
+address + IP (`createMfa`, `createPasskeys` and `createMagic` take the same
+`rateLimiter` option). A refused hit throws `IdentityError` with code `rate_limited`
 and `retryAfterMs`. Pass the caller's IP as `SignupInput.ipAddress` and
 `SessionMeta.ipAddress` so the keys include it. The Postgres implementation
 needs `sql/005_hardening.sql`; `sweepExpired()` prunes idle buckets.
@@ -263,6 +265,9 @@ a property of the return types).
 | `invalid_config` | createMfa, createApiKeys | malformed key / prefix at construction |
 | `unknown_provider` | oidc begin/complete | no provider registered under that name |
 | `no_id_token` | oidc complete | the token response had no ID token |
+| `invalid_challenge` | passkeys registerFinish / authenticateFinish | challenge unknown / spent, expired, wrong purpose, or another user's (`reason`) |
+| `passkey_verification_failed` | passkeys registerFinish | attestation did not verify (origin, RP id, UV, duplicate credential); `reason` |
+| `passkey_counter_regression` | passkeys authenticateFinish | signature counter did not advance — cloned authenticator or replay |
 
 ## Opt-in modules
 
@@ -293,6 +298,63 @@ code phished in real time from being replayed in its own window; the
 pending-login state is a single-purpose table, never a half-privileged session;
 guesses are bounded (five per authentication), which is what makes six digits
 safe. Recovery codes are argon2id-hashed. Apply `sql/002_mfa.sql`.
+
+### `identity-kit/passkeys` — WebAuthn credentials
+
+```ts
+import { createPasskeys } from '@quxkit/identity-kit/passkeys';
+
+const passkeys = createPasskeys({ db, config, mail, rp: { id: 'example.com', name: 'Acme', origin: 'https://app.example.com' } });
+
+// register (signed in; needs recent auth — the same EnrolmentProof as MFA)
+const creation = await passkeys.registerBegin(userId, { sessionToken });   // -> navigator.credentials.create
+const passkey  = await passkeys.registerFinish(userId, browserResponse, { name: 'MacBook', meta });
+
+// sign in (usernameless: no userId; or name the user to restrict allowCredentials)
+const request = await passkeys.authenticateBegin();                        // -> navigator.credentials.get
+const result  = await passkeys.authenticateFinish(browserResponse, meta);  // { kind: 'session', token } | { kind: 'failed' }
+
+await passkeys.list(userId); await passkeys.rename(userId, id, 'Phone'); await passkeys.remove(userId, id, meta);
+```
+
+The ceremony is [`@simplewebauthn/server`](https://simplewebauthn.dev)'s (a
+runtime dependency of this subpath only); the browser half is
+`@simplewebauthn/browser` or `PublicKeyCredential.parseCreationOptionsFromJSON`.
+What identity-kit owns: the **challenge is stored server-side**
+(`identity.webauthn_challenges`, sha256, five-minute TTL, spent on use — even a
+failing finish burns it, so nothing replays and the host holds no per-request
+state); **registration needs recent authentication** so a hijacked session
+cannot add an attacker's key; the **signature counter** is checked before the
+signature and a regression is `passkey_counter_regression` (recorded as a
+`login_failed`), not a swallowed `verified: false`; user verification is
+required at verification time (`userVerification: 'discouraged'` to accept
+presence-only keys); a good assertion goes through `finishLogin`, so it is a real
+login — same session, new-device mail, `login_succeeded` (`via: 'passkey'`) —
+and, being two factors in one authenticator, never asks for TOTP. Apply
+`sql/007_passkeys.sql`; `sweepExpired()` prunes stale challenges.
+
+### `identity-kit/magic` — passwordless sign-in by emailed link
+
+```ts
+import { createMagic } from '@quxkit/identity-kit/magic';
+
+const magic = createMagic({ db, config, mail, secondFactor: mfa.secondFactor });
+await magic.request({ email, ipAddress });                 // { accepted: true } — always
+const r = await magic.consume({ token }, { ipAddress, userAgent });
+// { kind: 'session', token, expiresAt } | { kind: 'mfa_required', pendingToken } | { kind: 'invalid' }
+```
+
+A link is a credential that travels by mail, so it gets the reset token's
+discipline: **15 minutes**, **one live token per user**, **sha256 at rest**,
+**burned on any use** in the transaction that mints the session. `request` is
+enumeration-safe (the same acceptance and a mail on both branches, keyed through
+the rate-limit seam as `magic_link`, 5/hour per address + ip). Only a
+**verified** account gets a link — an unverified signup may be a squat on
+someone else's address, and mailing that address a login would hand the
+squatter's account (with the squatter's password still on it) to the victim.
+`consume` re-checks at redemption, goes through `finishLogin` (`via:
+'magic_link'`, plus a `magic_link_used` event), and does **not** bypass a second
+factor. Apply `sql/008_magic.sql`; `sweepExpired()` prunes expired tokens.
 
 ### `identity-kit/apikeys` — keys as their own principal
 
@@ -351,16 +413,18 @@ gets). Apply `sql/004_oidc.sql`. SAML stays out of scope.
 Everything lives in an `identity` schema so it cannot collide with a host
 application's `users` table. `sql/001_identity.sql` declares `users`, `sessions`,
 `email_verification_tokens` and `password_reset_tokens`; `002_mfa.sql`,
-`003_apikeys.sql` and `004_oidc.sql` add the opt-in modules' tables;
+`003_apikeys.sql`, `004_oidc.sql` and `007_passkeys.sql` add the opt-in modules' tables;
 `005_hardening.sql` adds `users.last_failed_at`, `sessions.authenticated_at` and
-the `rate_limits` table (required by the core); `006_events.sql` adds the
+the `rate_limits` table (required by the core); `007_passkeys.sql` adds
+`passkeys` and `webauthn_challenges` for the passkeys module; `008_magic.sql`
+adds `magic_link_tokens`; `006_events.sql` adds the
 security-events log (required by the core; keyed by a text `user_id` with no
 foreign key, because API-key events are keyed by an opaque owner — purge deletes
 them explicitly). Everything else cascades on delete; every file is re-runnable,
 applied in order:
 
 ```sh
-for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening 006_events; do
+for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening 006_events 007_passkeys 008_magic; do
   psql -v ON_ERROR_STOP=1 -f "node_modules/@quxkit/identity-kit/sql/$f.sql"
 done
 ```
