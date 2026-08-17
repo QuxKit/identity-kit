@@ -202,6 +202,23 @@ describe('security events', { skip: harness === null ? SKIP_REASON : false }, ()
     assert.equal(evs[0]?.ip, '203.0.113.7');
   });
 
+  it('equal timestamps break on the numeric id, not its text form (9 < 10 < 12)', async () => {
+    const userId = 'tie-subject';
+    const at = new Date('2026-02-02T00:00:00Z');
+    // enough rows that ids cross a digit boundary within the same instant
+    for (let i = 0; i < 12; i += 1) {
+      await recordEvent(h.db, { userId, kind: 'login_failed', at, metadata: { i } });
+    }
+    const evs = await listEvents(h.db, userId);
+    const ids = evs.map((e) => Number(e.id));
+    assert.deepEqual(
+      ids,
+      [...ids].sort((a, b) => b - a),
+      'newest (highest id) first, numerically',
+    );
+    assert.equal(evs[0]?.metadata.i, 11);
+  });
+
   it('list pages newest-first with limit and before; the limit is capped', async () => {
     const userId = 'paging-subject';
     const base = new Date('2026-01-01T00:00:00Z');

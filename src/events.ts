@@ -102,10 +102,12 @@ export async function listEvents(
 ): Promise<SecurityEvent[]> {
   const limit = Math.max(1, Math.min(MAX_LIMIT, Math.floor(opts.limit ?? DEFAULT_LIMIT)));
   const rows = await db.query<EventRow>(
-    `SELECT id::text AS id, user_id, kind, ip, user_agent, at, metadata
-       FROM identity.events
-      WHERE user_id = $1 AND ($2::timestamptz IS NULL OR at < $2)
-      ORDER BY at DESC, id DESC
+    // `e.id` is qualified on purpose: a bare `id` in ORDER BY would bind to the
+    // text alias in the SELECT list and sort "9" after "12".
+    `SELECT e.id::text AS id, e.user_id, e.kind, e.ip, e.user_agent, e.at, e.metadata
+       FROM identity.events e
+      WHERE e.user_id = $1 AND ($2::timestamptz IS NULL OR e.at < $2)
+      ORDER BY e.at DESC, e.id DESC
       LIMIT $3`,
     [userId, opts.before ?? null, limit],
   );
