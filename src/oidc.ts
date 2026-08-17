@@ -21,6 +21,7 @@
 
 import * as oauth from 'openid-client';
 
+import { IdentityError } from './errors.ts';
 import { type LinkResult, linkOrCreate, type ProviderClaims } from './oidc-link.ts';
 import type { Clock, SqlExecutor } from './types.ts';
 
@@ -80,7 +81,7 @@ export function createOidc(opts: OidcOptions): Oidc {
 
   const providerConfig = (name: string): OidcProvider => {
     const p = opts.providers[name];
-    if (!p) throw new Error(`oidc: unknown provider ${name}`);
+    if (!p) throw new IdentityError({ code: 'unknown_provider', provider: name });
     return p;
   };
 
@@ -124,7 +125,7 @@ export function createOidc(opts: OidcOptions): Oidc {
         pkceCodeVerifier: checks.codeVerifier,
       });
       const idClaims = tokens.claims();
-      if (!idClaims) throw new Error('oidc: the token response carried no ID token');
+      if (!idClaims) throw new IdentityError({ code: 'no_id_token' });
 
       const email = typeof idClaims.email === 'string' ? idClaims.email : null;
       // Google sends a boolean; Apple sends the string "true". Coerce both.
