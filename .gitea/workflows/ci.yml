@@ -1,8 +1,9 @@
-# CI — typecheck, build and the full test suite on every push and PR.
+# CI — lint, typecheck, build and the full test suite with coverage on every
+# push and PR, the same script set as .github/workflows/ci.yml.
 #
 # Host runner (brett-local): node (nvm), pnpm and PostgreSQL are already there,
 # so the DB-backed security tests run for real. No external actions; the checkout
-# is a plain git clone with the job token.
+# is a plain git clone with the job token. Paths are derived, never hardcoded.
 name: CI
 
 on:
@@ -16,9 +17,9 @@ jobs:
     steps:
       - name: Put node / pnpm / psql on PATH
         run: |
-          ls -d /Users/ezyp/.nvm/versions/node/*/bin | tail -1 >> "$GITHUB_PATH"
-          echo "/opt/homebrew/opt/postgresql@17/bin" >> "$GITHUB_PATH"
-          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          ls -d "$HOME"/.nvm/versions/node/*/bin | tail -1 >> "$GITHUB_PATH"
+          echo "$(brew --prefix postgresql@17)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
 
       - name: Checkout
         run: |
@@ -29,14 +30,16 @@ jobs:
       - name: Ensure the test database exists
         run: createdb identity_kit_test 2>/dev/null || true
 
-      - name: Typecheck, build, test
+      - name: Lint, typecheck, build, test with coverage
         working-directory: src-checkout
         env:
+          REQUIRE_DB: '1'
           IDENTITY_KIT_TEST_DATABASE_URL: postgres://localhost:5432/identity_kit_test
         run: |
           # @node-rs/argon2 has an ignored build script; its prebuilt binary
           # comes from the package, so strict-dep-builds=false keeps install at 0.
-          pnpm install --config.strict-dep-builds=false
-          node_modules/.bin/tsc --noEmit
-          node_modules/.bin/tsup
-          node_modules/.bin/tsx --test --test-concurrency=1 test/*.test.ts
+          pnpm install --frozen-lockfile --config.strict-dep-builds=false
+          pnpm lint
+          pnpm typecheck
+          pnpm build
+          pnpm test:coverage
