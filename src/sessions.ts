@@ -11,14 +11,7 @@
 // that stops running must not silently extend everyone's session.
 
 import { issueToken, sha256 } from './tokens.ts';
-import type {
-  IdentityConfig,
-  ResolvedSession,
-  SessionMeta,
-  SessionSummary,
-  SqlExecutor,
-  UserId,
-} from './types.ts';
+import type { IdentityConfig, ResolvedSession, SessionMeta, SessionSummary, SqlExecutor, UserId } from './types.ts';
 
 /** A session refreshed forever is a session never revoked. */
 export const ABSOLUTE_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
@@ -55,11 +48,7 @@ export async function createSession(
  * The idle window slides only once past halfway, so a read-mostly table does not
  * become write-hot with an UPDATE in front of every page load.
  */
-export async function resolveSession(
-  db: SqlExecutor,
-  token: string,
-  now: Date,
-): Promise<ResolvedSession | null> {
+export async function resolveSession(db: SqlExecutor, token: string, now: Date): Promise<ResolvedSession | null> {
   const tokenHash = sha256(token);
   const rows = await db.query<SessionRow>(
     `SELECT token_hash, user_id, expires_at, absolute_expires_at
@@ -77,10 +66,11 @@ export async function resolveSession(
   let expiresAt = row.expires_at;
   if (row.expires_at.getTime() - now.getTime() < IDLE_LIFETIME_MS / 2) {
     expiresAt = new Date(Math.min(now.getTime() + IDLE_LIFETIME_MS, row.absolute_expires_at.getTime()));
-    await db.query(
-      'UPDATE identity.sessions SET expires_at = $2, last_seen_at = $3 WHERE token_hash = $1',
-      [tokenHash, expiresAt, now],
-    );
+    await db.query('UPDATE identity.sessions SET expires_at = $2, last_seen_at = $3 WHERE token_hash = $1', [
+      tokenHash,
+      expiresAt,
+      now,
+    ]);
   }
 
   return {
@@ -102,20 +92,15 @@ export async function revokeSession(db: SqlExecutor, tokenHash: string): Promise
  * *how* the account authenticates invalidates everything that authenticated
  * under the old rules. Returns how many were revoked.
  */
-export async function revokeAllSessions(
-  db: SqlExecutor,
-  userId: UserId,
-  exceptTokenHash?: string,
-): Promise<number> {
+export async function revokeAllSessions(db: SqlExecutor, userId: UserId, exceptTokenHash?: string): Promise<number> {
   const rows = exceptTokenHash
     ? await db.query<{ token_hash: string }>(
         'DELETE FROM identity.sessions WHERE user_id = $1 AND token_hash <> $2 RETURNING token_hash',
         [userId, exceptTokenHash],
       )
-    : await db.query<{ token_hash: string }>(
-        'DELETE FROM identity.sessions WHERE user_id = $1 RETURNING token_hash',
-        [userId],
-      );
+    : await db.query<{ token_hash: string }>('DELETE FROM identity.sessions WHERE user_id = $1 RETURNING token_hash', [
+        userId,
+      ]);
   return rows.length;
 }
 
@@ -155,8 +140,7 @@ export async function sweepExpiredSessions(db: SqlExecutor, now: Date): Promise<
 
 /** `__Host-` is refused by the browser unless the cookie is also Secure, so the
  *  name follows `cookieSecure`; production (Secure on) always gets the prefix. */
-export const cookieName = (config: IdentityConfig): string =>
-  config.cookieSecure ? '__Host-session' : 'session';
+export const cookieName = (config: IdentityConfig): string => (config.cookieSecure ? '__Host-session' : 'session');
 
 /**
  * The Set-Cookie value. `__Host-` requires Secure, Path=/ and no Domain — that

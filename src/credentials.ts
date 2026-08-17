@@ -18,8 +18,8 @@
 // pepper is a secret the host injects, and two instances in one process (a test
 // and a worker) must be able to hold different ones.
 
-import { Algorithm, hash as argonHash, verify as argonVerify } from '@node-rs/argon2';
 import { createHmac } from 'node:crypto';
+import { Algorithm, hash as argonHash, verify as argonVerify } from '@node-rs/argon2';
 import { IdentityError } from './errors.ts';
 import type { IdentityConfig } from './types.ts';
 

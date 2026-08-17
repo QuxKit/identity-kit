@@ -115,7 +115,15 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
       const rows = await db.query<{ id: string }>(
         `INSERT INTO identity.api_keys (owner_id, key_hash, display_prefix, name, scopes, created_by, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-        [ownerId, sha256(key), displayPrefix, input.name, [...(input.scopes ?? [])], input.createdBy ?? null, input.expiresAt ?? null],
+        [
+          ownerId,
+          sha256(key),
+          displayPrefix,
+          input.name,
+          [...(input.scopes ?? [])],
+          input.createdBy ?? null,
+          input.expiresAt ?? null,
+        ],
       );
       return { id: rows[0]!.id, key, displayPrefix };
     },

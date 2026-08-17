@@ -23,8 +23,7 @@ export interface Mailer {
 }
 
 export function createMailer(config: IdentityConfig, sender: MailSender): Mailer {
-  const link = (path: string, token: string) =>
-    `${config.appUrl}${path}?token=${encodeURIComponent(token)}`;
+  const link = (path: string, token: string) => `${config.appUrl}${path}?token=${encodeURIComponent(token)}`;
   const url = (path: string) => `${config.appUrl}${path}`;
 
   return {

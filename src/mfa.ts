@@ -14,9 +14,9 @@
 import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Secret, TOTP } from 'otpauth';
 
-import { createCredentials, type Credentials } from './credentials.ts';
-import { createMailer, type Mailer } from './mail.ts';
+import { type Credentials, createCredentials } from './credentials.ts';
 import { randomBase32 } from './encoding.ts';
+import { createMailer, type Mailer } from './mail.ts';
 import { finishLogin } from './session-login.ts';
 import { revokeAllSessions } from './sessions.ts';
 import { expiresIn, issueToken, sha256 } from './tokens.ts';
@@ -159,10 +159,11 @@ export function createMfa(opts: MfaOptions): Mfa {
     await db.transaction(async (tx) => {
       // One live pending login per user.
       await tx.query('DELETE FROM identity.pending_logins WHERE user_id = $1', [userId]);
-      await tx.query(
-        'INSERT INTO identity.pending_logins (token_hash, user_id, expires_at) VALUES ($1, $2, $3)',
-        [hash, userId, expiresIn(PENDING_TTL_S, now)],
-      );
+      await tx.query('INSERT INTO identity.pending_logins (token_hash, user_id, expires_at) VALUES ($1, $2, $3)', [
+        hash,
+        userId,
+        expiresIn(PENDING_TTL_S, now),
+      ]);
     });
     return plaintext;
   };
@@ -274,7 +275,10 @@ export function createMfa(opts: MfaOptions): Mfa {
         ]);
         await tx.query('DELETE FROM identity.recovery_codes WHERE user_id = $1', [userId]);
         for (const codeHash of hashes) {
-          await tx.query('INSERT INTO identity.recovery_codes (user_id, code_hash) VALUES ($1, $2)', [userId, codeHash]);
+          await tx.query('INSERT INTO identity.recovery_codes (user_id, code_hash) VALUES ($1, $2)', [
+            userId,
+            codeHash,
+          ]);
         }
       });
       await revokeAllSessions(db, userId);
@@ -357,7 +361,9 @@ export function createMfa(opts: MfaOptions): Mfa {
       });
       // An unexpected one of these is a takeover in progress, and the mail is the
       // only place the user would find out.
-      await mailer.recoveryCodeUsed(email, unused.length - 1).catch((e) => warn(`recovery-code mail failed: ${String(e)}`));
+      await mailer
+        .recoveryCodeUsed(email, unused.length - 1)
+        .catch((e) => warn(`recovery-code mail failed: ${String(e)}`));
       return finishLogin(db, mailer, pending.userId, email, meta, now, opts.logger);
     },
 

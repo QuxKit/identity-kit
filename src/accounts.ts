@@ -7,8 +7,8 @@
 // oracle closed on login, tokens burned on any use, backoff that is not a
 // denial-of-service against the victim.
 
+import { type Credentials, passwordProblem } from './credentials.ts';
 import { IdentityError } from './errors.ts';
-import { passwordProblem, type Credentials } from './credentials.ts';
 import type { Mailer } from './mail.ts';
 import { finishLogin } from './session-login.ts';
 import { revokeAllSessions } from './sessions.ts';
@@ -16,8 +16,8 @@ import { expiresIn, issueToken, sha256 } from './tokens.ts';
 import type {
   Clock,
   IdentityConfig,
-  LoginResult,
   Logger,
+  LoginResult,
   ResetResult,
   SecondFactor,
   SessionMeta,
@@ -157,12 +157,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
         [email, input.email.trim(), input.name ?? null, passwordHash, config.pepperVersion],
       );
       const userId = inserted[0]!.id;
-      const token = await issueVerification(
-        db,
-        userId,
-        'verify_email',
-        expiresIn(VERIFICATION_TTL_S, clock()),
-      );
+      const token = await issueVerification(db, userId, 'verify_email', expiresIn(VERIFICATION_TTL_S, clock()));
       await mailer.verifyAddress(email, token);
       return { accepted: true };
     },
@@ -367,12 +362,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
       const user = rows[0];
       if (!user) throw new IdentityError({ code: 'not_found', what: `user ${userId}` });
       await revokeAllSessions(db, userId);
-      const token = await issueVerification(
-        db,
-        userId,
-        'cancel_deletion',
-        new Date(now.getTime() + DELETION_GRACE_MS),
-      );
+      const token = await issueVerification(db, userId, 'cancel_deletion', new Date(now.getTime() + DELETION_GRACE_MS));
       await mailer.deletionRequested(user.email, token);
     },
 

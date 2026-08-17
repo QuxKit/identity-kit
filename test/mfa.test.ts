@@ -9,7 +9,7 @@ import { Secret, TOTP } from 'otpauth';
 
 import { createIdentity } from '../src/index.ts';
 import { createMfa } from '../src/mfa.ts';
-import { setupDatabase, SKIP_REASON, testConfig, testTotpKey, type Harness } from './harness.ts';
+import { type Harness, SKIP_REASON, setupDatabase, testConfig, testTotpKey } from './harness.ts';
 
 const harness = await setupDatabase();
 after(async () => {
@@ -92,7 +92,12 @@ describe('identity-kit/mfa', { skip: harness === null ? SKIP_REASON : false }, (
 
     h.mail.clear();
     const login = await id.login({ email: 'pat@example.com', password: 'correct horse battery' }, {}, t0);
-    const done = await mfa.verifyRecoveryCode(login.kind === 'mfa_required' ? login.pendingToken : '', codes[0]!, {}, t0);
+    const done = await mfa.verifyRecoveryCode(
+      login.kind === 'mfa_required' ? login.pendingToken : '',
+      codes[0]!,
+      {},
+      t0,
+    );
     assert.equal(done.kind, 'session');
     assert.equal(await mfa.remainingRecoveryCodes(userId), 9);
     assert.match(h.mail.to('pat@example.com')[0]!.subject, /recovery code/i);

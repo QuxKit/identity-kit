@@ -21,7 +21,7 @@
 
 import * as oauth from 'openid-client';
 
-import { linkOrCreate, type LinkResult, type ProviderClaims } from './oidc-link.ts';
+import { type LinkResult, linkOrCreate, type ProviderClaims } from './oidc-link.ts';
 import type { Clock, SqlExecutor } from './types.ts';
 
 export interface OidcProvider {
@@ -143,5 +143,5 @@ export function createOidc(opts: OidcOptions): Oidc {
   };
 }
 
-export { linkOrCreate } from './oidc-link.ts';
 export type { LinkResult, ProviderClaims } from './oidc-link.ts';
+export { linkOrCreate } from './oidc-link.ts';

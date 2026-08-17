@@ -9,53 +9,46 @@
 // `createIdentity` binds an executor, config and mail transport over the free
 // functions below. Nothing here reads the environment.
 
-export { createIdentity } from './instance.ts';
-export type { Identity, IdentityOptions } from './instance.ts';
-
-export { createCredentials, passwordProblem, PARAMS } from './credentials.ts';
+export type { Accounts, AccountsDeps } from './accounts.ts';
+export { createAccounts } from './accounts.ts';
 export type { Credentials } from './credentials.ts';
-
-export { createMailer } from './mail.ts';
+export { createCredentials, PARAMS, passwordProblem } from './credentials.ts';
+export type { IdentityErrorCode, IdentityFailure } from './errors.ts';
+export { IdentityError } from './errors.ts';
+export type { Identity, IdentityOptions } from './instance.ts';
+export { createIdentity } from './instance.ts';
 export type { Mailer } from './mail.ts';
-
+export { createMailer } from './mail.ts';
+export { finishLogin } from './session-login.ts';
 export {
-  createSession,
-  resolveSession,
-  revokeSession,
-  revokeAllSessions,
-  listSessions,
-  sweepExpiredSessions,
-  sessionCookie,
+  ABSOLUTE_LIFETIME_MS,
   clearedSessionCookie,
   cookieName,
-  ABSOLUTE_LIFETIME_MS,
+  createSession,
   IDLE_LIFETIME_MS,
+  listSessions,
+  resolveSession,
+  revokeAllSessions,
+  revokeSession,
+  sessionCookie,
+  sweepExpiredSessions,
 } from './sessions.ts';
-
-export { createAccounts } from './accounts.ts';
-export type { Accounts, AccountsDeps } from './accounts.ts';
-
-export { finishLogin } from './session-login.ts';
-
-export { issueToken, sha256, expiresIn } from './tokens.ts';
 export type { IssuedToken } from './tokens.ts';
-
-export { IdentityError } from './errors.ts';
-export type { IdentityFailure, IdentityErrorCode } from './errors.ts';
+export { expiresIn, issueToken, sha256 } from './tokens.ts';
 
 export type {
   Clock,
   IdentityConfig,
   Logger,
+  LoginResult,
   MailSender,
   Message,
+  ResetResult,
   ResolvedSession,
   SecondFactor,
   SessionMeta,
   SessionSummary,
   SignupInput,
-  LoginResult,
-  ResetResult,
   SqlExecutor,
   User,
   UserId,

@@ -6,7 +6,7 @@
 // each module exports are still the API; this binds the executor, clock and
 // config over them for the common case where an application has one of each.
 
-import { createAccounts, type Accounts } from './accounts.ts';
+import { type Accounts, createAccounts } from './accounts.ts';
 import { createCredentials } from './credentials.ts';
 import { createMailer } from './mail.ts';
 import {

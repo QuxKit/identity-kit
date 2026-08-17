@@ -4,10 +4,9 @@
 
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
-
-import { createIdentity } from '../src/index.ts';
 import { IdentityError } from '../src/errors.ts';
-import { setupDatabase, SKIP_REASON, testConfig, type Harness } from './harness.ts';
+import { createIdentity } from '../src/index.ts';
+import { type Harness, SKIP_REASON, setupDatabase, testConfig } from './harness.ts';
 
 const harness = await setupDatabase();
 after(async () => {
@@ -21,10 +20,9 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
   const id = createIdentity({ db: h.db, config: testConfig, mail: h.mail });
 
   const userCount = async (email: string): Promise<number> => {
-    const rows = await h.db.query<{ n: string }>(
-      'SELECT count(*)::text AS n FROM identity.users WHERE email = $1',
-      [email.toLowerCase()],
-    );
+    const rows = await h.db.query<{ n: string }>('SELECT count(*)::text AS n FROM identity.users WHERE email = $1', [
+      email.toLowerCase(),
+    ]);
     return Number(rows[0]!.n);
   };
 

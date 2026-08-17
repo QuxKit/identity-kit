@@ -7,8 +7,8 @@
 // new-device notification or the fresh identifier and nobody notices until it
 // matters.
 
-import { createSession } from './sessions.ts';
 import type { Mailer } from './mail.ts';
+import { createSession } from './sessions.ts';
 import type { Logger, SessionMeta, SqlExecutor, UserId } from './types.ts';
 
 export async function finishLogin(

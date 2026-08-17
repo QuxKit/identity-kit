@@ -146,7 +146,4 @@ export interface SecondFactor {
   pendingFor(userId: UserId, now: Date): Promise<string | null>;
 }
 
-export type ResetResult =
-  | { kind: 'done' }
-  | { kind: 'weak_password'; message: string }
-  | { kind: 'invalid' };
+export type ResetResult = { kind: 'done' } | { kind: 'weak_password'; message: string } | { kind: 'invalid' };

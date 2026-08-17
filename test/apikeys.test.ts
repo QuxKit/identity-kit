@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
 import { createApiKeys } from '../src/apikeys.ts';
-import { setupDatabase, SKIP_REASON, type Harness } from './harness.ts';
+import { type Harness, SKIP_REASON, setupDatabase } from './harness.ts';
 
 const harness = await setupDatabase();
 after(async () => {
