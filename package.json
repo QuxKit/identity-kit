@@ -77,7 +77,8 @@
     "sql",
     "LICENSE",
     "NOTICE",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "lint": "biome check .",
@@ -86,7 +87,7 @@
     "build": "tsup",
     "test": "tsx --test --test-concurrency=1 test/*.test.ts",
     "test:coverage": "c8 pnpm test",
-    "prepack": "pnpm run build"
+    "prepublishOnly": "pnpm lint && pnpm typecheck && pnpm build && pnpm test"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.0",

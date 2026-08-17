@@ -231,10 +231,13 @@ on delete.
 
 ```sh
 pnpm install
-pnpm typecheck
 createdb identity_kit_test   # the tests exercise real SQL; they skip without a DB
-pnpm test
+pnpm lint && pnpm typecheck && pnpm build && pnpm test
+pnpm test:coverage           # the same under c8; thresholds in .c8rc.json
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the issue → branch → PR workflow and
+[SECURITY.md](SECURITY.md) for how to report a vulnerability privately.
 
 The tests assert the security properties against a real Postgres — the token
 burned in the same transaction as the write, the unique constraint on email, the
