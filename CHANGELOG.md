@@ -8,6 +8,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Security-events log** — `identity.events` (`sql/006_events.sql`,
+  **required**): `login_succeeded` / `login_failed` (with a reason),
+  `password_changed` / `password_reset`, `session_revoked`, `mfa_enrolled` /
+  `mfa_removed`, `api_key_issued` / `api_key_revoked`, `passkey_registered` /
+  `passkey_removed`, `magic_link_used`, each with `ip`, `user_agent`, `at`,
+  `metadata`. Every existing flow records; `identity.events.list(userId,
+  { limit, before })`, `.record`, `.sweep`; free functions `recordEvent`,
+  `listEvents`, `sweepEvents`, `deleteEventsFor`; `config.eventRetentionMs`
+  (default 90 days) applied by `sweepExpired()` (`SweepReport.events`).
+  Optional trailing `meta: SessionMeta` on `changePassword`, `resetPassword`,
+  `revokeSession`, `revokeAllSessions`, `confirmTotpEnrolment`, `removeTotp`,
+  `revokeApiKey`, and `CreateApiKeyInput.meta`. `finishLogin` takes a
+  `LoginMethod` recorded as `metadata.via`. Purges delete the account's events.
+
 - `@quxkit/identity-kit/pg` — `pgExecutor(pool)`, the shipped node-postgres
   adapter (pinned-connection transactions, savepoints for nesting). `pg` is an
   optional peer dependency.

@@ -81,6 +81,9 @@ export interface IdentityConfig {
   /** How recent a session's credential proof must be for MFA enrolment via a
    *  session token. Default ten minutes. */
   reauthWindowMs?: number;
+  /** How long rows in `identity.events` are kept by `sweepExpired` /
+   *  `events.sweep`. Default ninety days. */
+  eventRetentionMs?: number;
 }
 
 // --- mail (a seam) ----------------------------------------------------------

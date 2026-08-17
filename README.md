@@ -104,8 +104,8 @@ const result = await identity.login({ email, password });
 if (result.kind === 'session') setCookie(identity.sessionCookie(result.token, result.expiresAt));
 ```
 
-Apply the schema first: `psql -f node_modules/@quxkit/identity-kit/sql/001_identity.sql`
-and `sql/005_hardening.sql` (both re-runnable; see [Schema](#schema)).
+Apply the schema first: `psql -f node_modules/@quxkit/identity-kit/sql/001_identity.sql`,
+`sql/005_hardening.sql` and `sql/006_events.sql` (all re-runnable; see [Schema](#schema)).
 
 `db` is any `SqlExecutor` — two methods, `query` and `transaction`. The `./pg`
 subpath ships one over a `pg.Pool` (pinned-connection transactions, savepoints
@@ -146,6 +146,10 @@ way to "secure" — so the reasoning is in the code. The load-bearing parts:
 - **MFA enrolment needs recent authentication** — a password, or a session that
   proved one inside `reauthWindowMs` (default ten minutes) — so a hijacked
   browser session cannot quietly enrol an attacker's authenticator.
+- **Every flow leaves a security event** — logins (and failed ones), password
+  changes and resets, MFA enrolled / removed, API keys issued / revoked,
+  sessions revoked — with the request's ip and user agent, readable per user.
+  See [Security events](#security-events).
 
 ## What it delegates
 
@@ -198,11 +202,42 @@ rotate it (they used to revoke everything). The flag defaults to off so a host
 that ignores the return values keeps working; turn it on once yours re-sets the
 cookie.
 
+## Security events
+
+```ts
+const recent = await identity.events.list(userId, { limit: 50 });          // newest first
+const older  = await identity.events.list(userId, { before: recent.at(-1)!.at });
+// [{ id, userId, kind: 'login_succeeded', ip, userAgent, at, metadata: { via: 'password' } }, ...]
+
+await identity.events.record({ userId, kind: 'session_revoked', meta: { ipAddress, userAgent } });
+await identity.events.sweep();     // older than config.eventRetentionMs (default 90 days)
+```
+
+`identity.events` (table `identity.events`, `sql/006_events.sql`, **required**)
+is the account's audit trail. Every flow appends a row: `login_succeeded`
+(`metadata.via`: `password` / `totp` / `recovery_code` / `magic_link` /
+`passkey`), `login_failed` (`metadata.reason`: `bad_password` / `backoff` /
+`unverified` / `deletion_pending` — never for an unknown address, so the log
+cannot be read as a list of who has an account), `password_changed`,
+`password_reset`, `session_revoked` (`metadata.count`), `mfa_enrolled` /
+`mfa_removed`, `api_key_issued` / `api_key_revoked` (keyed by the key's
+`ownerId`), `passkey_registered` / `passkey_removed`, `magic_link_used`. Where a
+mutation is transactional the event commits with it.
+
+Pass the request's `SessionMeta` (`ipAddress`, `userAgent`) to have it on the
+row: `login(input, meta)`, `changePassword(..., meta)`, `resetPassword(...,
+meta)`, `revokeSession(hash, meta)`, `confirmTotpEnrolment(..., meta)`,
+`removeTotp(..., meta)`, `createApiKey(owner, { meta })`, `revokeApiKey(id, now,
+meta)`. Never a secret, a token or a password in `metadata`. The free functions
+`recordEvent` / `listEvents` / `sweepEvents` take a `db` for use outside
+`createIdentity`. Purging an account (`purgeUnverified` / `purgeDeleted`) deletes
+its events; `sweepExpired()` applies the retention.
+
 ## Housekeeping
 
 `identity.sweepExpired()` runs every sweeper in one call — expired sessions,
-reset and verification tokens, pending logins, idle rate-limit buckets — and
-returns the counts. Expiry is always checked on read; this only frees rows.
+reset and verification tokens, pending logins, idle rate-limit buckets, security
+events past retention — and returns the counts. Expiry is always checked on read; this only frees rows.
 `purgeUnverified()` and `purgeDeleted()` are separate because they delete
 accounts.
 
@@ -318,11 +353,14 @@ application's `users` table. `sql/001_identity.sql` declares `users`, `sessions`
 `email_verification_tokens` and `password_reset_tokens`; `002_mfa.sql`,
 `003_apikeys.sql` and `004_oidc.sql` add the opt-in modules' tables;
 `005_hardening.sql` adds `users.last_failed_at`, `sessions.authenticated_at` and
-the `rate_limits` table (required by the core). All cascade on delete; every
-file is re-runnable, applied in order:
+the `rate_limits` table (required by the core); `006_events.sql` adds the
+security-events log (required by the core; keyed by a text `user_id` with no
+foreign key, because API-key events are keyed by an opaque owner — purge deletes
+them explicitly). Everything else cascades on delete; every file is re-runnable,
+applied in order:
 
 ```sh
-for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening; do
+for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening 006_events; do
   psql -v ON_ERROR_STOP=1 -f "node_modules/@quxkit/identity-kit/sql/$f.sql"
 done
 ```

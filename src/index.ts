@@ -15,6 +15,15 @@ export type { Credentials } from './credentials.ts';
 export { createCredentials, PARAMS, passwordProblem } from './credentials.ts';
 export type { IdentityErrorCode, IdentityFailure } from './errors.ts';
 export { IdentityError } from './errors.ts';
+export type { Events, ListEventsOptions, RecordEventInput, SecurityEvent, SecurityEventKind } from './events.ts';
+export {
+  createEvents,
+  DEFAULT_EVENT_RETENTION_MS,
+  deleteEventsFor,
+  listEvents,
+  recordEvent,
+  sweepEvents,
+} from './events.ts';
 export type { Identity, IdentityOptions } from './instance.ts';
 export { createIdentity } from './instance.ts';
 export type { Mailer } from './mail.ts';
@@ -27,8 +36,9 @@ export type {
   RateLimitRules,
 } from './ratelimit.ts';
 export { createMemoryRateLimiter, createPgRateLimiter, DEFAULT_RATE_LIMITS, limiterKey } from './ratelimit.ts';
+export type { LoginMethod } from './session-login.ts';
 export { finishLogin } from './session-login.ts';
-export type { ResolveOptions, SweepReport } from './sessions.ts';
+export type { ResolveOptions, SweepOptions, SweepReport } from './sessions.ts';
 export {
   ABSOLUTE_LIFETIME_MS,
   clearedSessionCookie,

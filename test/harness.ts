@@ -84,7 +84,14 @@ export async function setupDatabase(): Promise<Harness | null> {
     return null;
   }
   await pool.query('DROP SCHEMA IF EXISTS identity CASCADE');
-  for (const f of ['001_identity.sql', '002_mfa.sql', '003_apikeys.sql', '004_oidc.sql', '005_hardening.sql']) {
+  for (const f of [
+    '001_identity.sql',
+    '002_mfa.sql',
+    '003_apikeys.sql',
+    '004_oidc.sql',
+    '005_hardening.sql',
+    '006_events.sql',
+  ]) {
     await pool.query(await readFile(fileURLToPath(new URL(`../sql/${f}`, import.meta.url)), 'utf8'));
   }
   return { db: pgExecutor(pool), mail: new MailCollector(), close: () => pool.end() };

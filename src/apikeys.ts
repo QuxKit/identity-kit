@@ -12,8 +12,9 @@
 import { randomBytes } from 'node:crypto';
 import { base32, crc32 } from './encoding.ts';
 import { IdentityError } from './errors.ts';
+import { recordEvent } from './events.ts';
 import { sha256 } from './tokens.ts';
-import type { Clock, SqlExecutor } from './types.ts';
+import type { Clock, SessionMeta, SqlExecutor } from './types.ts';
 
 export type KeyEnvironment = 'live' | 'test';
 
@@ -38,6 +39,9 @@ export interface CreateApiKeyInput {
   scopes?: readonly string[];
   expiresAt?: Date;
   createdBy?: string;
+  /** The issuing request's ip / user agent, recorded on the `api_key_issued`
+   *  event (keyed by `ownerId`). */
+  meta?: SessionMeta;
 }
 
 export interface CreatedKey {
@@ -71,8 +75,9 @@ export interface ApiKeys {
   createApiKey(ownerId: string, input: CreateApiKeyInput): Promise<CreatedKey>;
   resolveApiKey(presented: string, now?: Date): Promise<KeyPrincipal | null>;
   /** Soft revoke: sets `revoked_at`, effective on the next request. The row
-   *  stays for the audit trail; a second call is a no-op. */
-  revokeApiKey(id: string, now?: Date): Promise<void>;
+   *  stays for the audit trail; a second call is a no-op. `meta` is recorded
+   *  on the `api_key_revoked` event. */
+  revokeApiKey(id: string, now?: Date, meta?: SessionMeta): Promise<void>;
   listApiKeys(ownerId: string): Promise<ApiKeySummary[]>;
 }
 
@@ -136,7 +141,15 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
         ],
       );
       // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING yields exactly one row
-      return { id: rows[0]!.id, key, displayPrefix };
+      const id = rows[0]!.id;
+      await recordEvent(db, {
+        userId: ownerId,
+        kind: 'api_key_issued',
+        meta: input.meta,
+        at: clock(),
+        metadata: { apiKeyId: id, name: input.name, displayPrefix, createdBy: input.createdBy ?? null },
+      });
+      return { id, key, displayPrefix };
     },
 
     /**
@@ -165,8 +178,20 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
 
     /** Effective on the next request. Lookups are not cached; if they ever
      *  are, the TTL is the revocation window. */
-    async revokeApiKey(id, now = clock()) {
-      await db.query('UPDATE identity.api_keys SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL', [id, now]);
+    async revokeApiKey(id, now = clock(), meta = {}) {
+      const rows = await db.query<{ owner_id: string; name: string }>(
+        'UPDATE identity.api_keys SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL RETURNING owner_id, name',
+        [id, now],
+      );
+      const row = rows[0];
+      if (!row) return;
+      await recordEvent(db, {
+        userId: row.owner_id,
+        kind: 'api_key_revoked',
+        meta,
+        at: now,
+        metadata: { apiKeyId: id, name: row.name },
+      });
     },
 
     async listApiKeys(ownerId) {
