@@ -4,3 +4,6 @@ dist/
 .env
 .env.*
 .DS_Store
+coverage/
+examples/*/node_modules/
+examples/*/pnpm-lock.yaml

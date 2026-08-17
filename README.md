@@ -84,9 +84,11 @@ with clean seams.
 
 ```ts
 import { createIdentity } from '@quxkit/identity-kit';
+import { pgExecutor } from '@quxkit/identity-kit/pg';   // the shipped node-postgres adapter
+import pg from 'pg';
 
 const identity = createIdentity({
-  db,                                   // any SqlExecutor (a pg.Pool adapter is ~15 lines)
+  db: pgExecutor(new pg.Pool({ connectionString: process.env.DATABASE_URL })),
   mail: { send: (m) => myTransport(m) }, // you own the relay; the library writes the body
   config: {
     pepper: process.env.AUTH_PEPPER!,   // an HMAC key kept OUT of the database
@@ -102,7 +104,13 @@ const result = await identity.login({ email, password });
 if (result.kind === 'session') setCookie(identity.sessionCookie(result.token, result.expiresAt));
 ```
 
-Apply the schema first: `psql -f node_modules/identity-kit/sql/001_identity.sql`.
+Apply the schema first: `psql -f node_modules/@quxkit/identity-kit/sql/001_identity.sql`.
+
+`db` is any `SqlExecutor` — two methods, `query` and `transaction`. The `./pg`
+subpath ships one over a `pg.Pool` (pinned-connection transactions, savepoints
+for nesting); `pg` is an optional peer dependency, so an app on another driver
+pays nothing for it. A runnable end-to-end version of this quickstart lives in
+[`examples/password-login`](examples/password-login/).
 
 ## What it does carefully
 

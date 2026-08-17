@@ -1,4 +1,4 @@
-// A pg.Pool adapter for SqlExecutor, a schema rebuild, and a mail collector.
+// The shipped pg adapter, a schema rebuild, and a mail collector.
 //
 // The tests run against a real Postgres, because the behaviour worth testing —
 // the token burned in the same transaction as the write, the unique constraint
@@ -8,37 +8,8 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 
+import { pgExecutor } from '../src/pg.ts';
 import type { IdentityConfig, MailSender, Message, SqlExecutor } from '../src/types.ts';
-
-export function fromPool(pool: pg.Pool): SqlExecutor {
-  return {
-    async query<T>(text: string, params?: readonly unknown[]): Promise<T[]> {
-      const result = await pool.query(text, params as unknown[]);
-      return result.rows as T[];
-    },
-    async transaction<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T> {
-      const client = await pool.connect();
-      const bound: SqlExecutor = {
-        async query<R>(text: string, params?: readonly unknown[]): Promise<R[]> {
-          const result = await client.query(text, params as unknown[]);
-          return result.rows as R[];
-        },
-        transaction: (inner) => inner(bound),
-      };
-      try {
-        await client.query('BEGIN');
-        const out = await fn(bound);
-        await client.query('COMMIT');
-        return out;
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      } finally {
-        client.release();
-      }
-    },
-  };
-}
 
 export const TEST_DATABASE_URL =
   process.env.IDENTITY_KIT_TEST_DATABASE_URL ?? 'postgres://localhost:5432/identity_kit_test';
@@ -116,7 +87,7 @@ export async function setupDatabase(): Promise<Harness | null> {
   for (const f of ['001_identity.sql', '002_mfa.sql', '003_apikeys.sql', '004_oidc.sql']) {
     await pool.query(await readFile(fileURLToPath(new URL(`../sql/${f}`, import.meta.url)), 'utf8'));
   }
-  return { db: fromPool(pool), mail: new MailCollector(), close: () => pool.end() };
+  return { db: pgExecutor(pool), mail: new MailCollector(), close: () => pool.end() };
 }
 
 export const SKIP_REASON =
