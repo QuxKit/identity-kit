@@ -8,6 +8,7 @@
 
 import { type Accounts, createAccounts } from './accounts.ts';
 import { createCredentials } from './credentials.ts';
+import { createEvents, type Events } from './events.ts';
 import { createMailer } from './mail.ts';
 import { createPgRateLimiter, type RateLimiter } from './ratelimit.ts';
 import {
@@ -31,6 +32,7 @@ import type {
   MailSender,
   ResolvedSession,
   SecondFactor,
+  SessionMeta,
   SessionSummary,
   SqlExecutor,
   UserId,
@@ -61,13 +63,16 @@ export interface Identity extends Accounts {
   resolveSession(token: string, now?: Date): Promise<ResolvedSession | null>;
   /** A fresh identifier for a live session; the old token is dead on return. */
   rotateSession(token: string, now?: Date): Promise<{ token: string; tokenHash: string; expiresAt: Date } | null>;
-  revokeSession(tokenHash: string): Promise<void>;
-  revokeAllSessions(userId: UserId, exceptTokenHash?: string): Promise<number>;
+  /** `meta` (ip, user agent) is recorded on the `session_revoked` event. */
+  revokeSession(tokenHash: string, meta?: SessionMeta): Promise<void>;
+  revokeAllSessions(userId: UserId, exceptTokenHash?: string, meta?: SessionMeta): Promise<number>;
   listSessions(userId: UserId): Promise<SessionSummary[]>;
   sweepExpiredSessions(now?: Date): Promise<number>;
   /** Every sweeper in one call: sessions, reset and verification tokens,
-   *  pending logins, idle rate-limit buckets. */
+   *  pending logins, idle rate-limit buckets, security events past retention. */
   sweepExpired(now?: Date): Promise<SweepReport>;
+  /** The security-events log (`sql/006_events.sql`): `list`, `record`, `sweep`. */
+  events: Events;
   // --- cookies (config-driven; the host may ignore these and set its own) ---
   cookieName(): string;
   sessionCookie(token: string, expiresAt: Date, now?: Date): string;
@@ -96,11 +101,12 @@ export function createIdentity(opts: IdentityOptions): Identity {
     resolveSession: (token, now) =>
       resolveSession(db, token, now ?? clock(), { rotateOnRenewal: config.rotateSessions === true }),
     rotateSession: (token, now) => rotateSession(db, sha256(token), now ?? clock()),
-    revokeSession: (tokenHash) => revokeSession(db, tokenHash),
-    revokeAllSessions: (userId, except) => revokeAllSessions(db, userId, except),
+    revokeSession: (tokenHash, meta) => revokeSession(db, tokenHash, meta, clock()),
+    revokeAllSessions: (userId, except, meta) => revokeAllSessions(db, userId, except, meta, clock()),
     listSessions: (userId) => listSessions(db, userId),
     sweepExpiredSessions: (now) => sweepExpiredSessions(db, now ?? clock()),
-    sweepExpired: (now) => sweepExpired(db, now ?? clock()),
+    sweepExpired: (now) => sweepExpired(db, now ?? clock(), { eventRetentionMs: config.eventRetentionMs }),
+    events: createEvents(db, clock, config.eventRetentionMs),
     cookieName: () => cookieName(config),
     sessionCookie: (token, expiresAt, now) => sessionCookie(config, token, expiresAt, now ?? clock()),
     clearedSessionCookie: () => clearedSessionCookie(config),

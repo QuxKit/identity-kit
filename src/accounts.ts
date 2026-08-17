@@ -9,6 +9,7 @@
 
 import { type Credentials, passwordProblem } from './credentials.ts';
 import { IdentityError } from './errors.ts';
+import { deleteEventsFor, recordEvent } from './events.ts';
 import type { Mailer } from './mail.ts';
 import { limiterKey, type RateLimiter } from './ratelimit.ts';
 import { finishLogin } from './session-login.ts';
@@ -72,13 +73,16 @@ export interface Accounts {
    *  Enumeration-safe: accepted either way, mail only to the address itself. */
   resendVerification(email: string, meta?: SessionMeta): Promise<{ accepted: true }>;
   requestPasswordReset(email: string, meta?: SessionMeta): Promise<{ accepted: true }>;
-  resetPassword(token: string, newPassword: string, now?: Date): Promise<ResetResult>;
+  /** `meta` (ip, user agent) is recorded on the `password_reset` event. */
+  resetPassword(token: string, newPassword: string, now?: Date, meta?: SessionMeta): Promise<ResetResult>;
+  /** `meta` (ip, user agent) is recorded on the `password_changed` event. */
   changePassword(
     userId: UserId,
     current: string,
     next: string,
     keepSessionHash?: string,
     now?: Date,
+    meta?: SessionMeta,
   ): Promise<PasswordChanged>;
   requestDeletion(userId: UserId, now?: Date): Promise<void>;
   cancelDeletion(token: string, now?: Date): Promise<boolean>;
@@ -258,16 +262,20 @@ export function createAccounts(deps: AccountsDeps): Accounts {
         await credentials.verifyAgainstDummy(input.password);
         return { kind: 'failed' };
       }
+      const failed = (reason: string) =>
+        recordEvent(db, { userId: user.id, kind: 'login_failed', meta, at: now, metadata: { reason } });
       if (user.locked_until && user.locked_until > now) {
         // Still burn the work — an instant return while locked leaks that the
         // account exists and is under attack.
         await credentials.verifyAgainstDummy(input.password);
+        await failed('backoff');
         return { kind: 'backoff', retryAfterSeconds: Math.ceil((user.locked_until.getTime() - now.getTime()) / 1000) };
       }
 
       const ok = await credentials.verifyPassword(user.password_hash, input.password, user.pepper_version);
       if (!ok) {
         await recordFailure(user.id, now);
+        await failed('bad_password');
         return { kind: 'failed' };
       }
 
@@ -276,6 +284,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
       // a wrong password by anyone who does not already know it.
       if (!user.email_verified_at || user.deletion_requested_at) {
         await clearFailures(user.id);
+        await failed(user.deletion_requested_at ? 'deletion_pending' : 'unverified');
         return { kind: 'failed' };
       }
 
@@ -349,7 +358,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
      * with the old password. A reset also proves control of the mailbox, so it
      * verifies the address and signs out every session.
      */
-    async resetPassword(token, newPassword, now = clock()) {
+    async resetPassword(token, newPassword, now = clock(), meta = {}) {
       const tokenHash = sha256(token);
       const outcome = await db.transaction<
         { kind: 'invalid' } | { kind: 'weak'; message: string } | { kind: 'ok'; email: string }
@@ -378,6 +387,8 @@ export function createAccounts(deps: AccountsDeps): Accounts {
           [row.user_id, passwordHash, config.pepperVersion, now],
         );
         await tx.query('DELETE FROM identity.sessions WHERE user_id = $1', [row.user_id]);
+        // In the transaction: the event and the new password commit together.
+        await recordEvent(tx, { userId: row.user_id, kind: 'password_reset', meta, at: now });
         // biome-ignore lint/style/noNonNullAssertion: UPDATE … RETURNING on the row the token named
         return { kind: 'ok', email: updated[0]!.email };
       });
@@ -394,7 +405,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
      * `config.rotateSessions`, is rotated (it just re-proved a credential, so
      * the identifier is renewed and `authenticatedAt` is refreshed).
      */
-    async changePassword(userId, current, next, keepSessionHash, now = clock()) {
+    async changePassword(userId, current, next, keepSessionHash, now = clock(), meta = {}) {
       const problem = passwordProblem(next);
       if (problem) throw new IdentityError({ code: 'weak_password', reason: problem });
 
@@ -414,6 +425,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
         passwordHash,
         config.pepperVersion,
       ]);
+      await recordEvent(db, { userId, kind: 'password_changed', meta, at: now });
       await revokeAllSessions(db, userId, keepSessionHash);
       const result: PasswordChanged = {};
       if (keepSessionHash && config.rotateSessions) {
@@ -469,6 +481,10 @@ export function createAccounts(deps: AccountsDeps): Accounts {
         'DELETE FROM identity.users WHERE email_verified_at IS NULL AND created_at < $1 RETURNING id',
         [new Date(now.getTime() - UNVERIFIED_TTL_MS)],
       );
+      await deleteEventsFor(
+        db,
+        rows.map((r) => r.id),
+      );
       return rows.length;
     },
 
@@ -479,6 +495,12 @@ export function createAccounts(deps: AccountsDeps): Accounts {
       const rows = await db.query<{ id: string }>(
         'DELETE FROM identity.users WHERE deletion_requested_at < $1 RETURNING id',
         [new Date(now.getTime() - DELETION_GRACE_MS)],
+      );
+      // Events carry no foreign key (see sql/006_events.sql), so the purge
+      // takes them along explicitly.
+      await deleteEventsFor(
+        db,
+        rows.map((r) => r.id),
       );
       return rows.length;
     },

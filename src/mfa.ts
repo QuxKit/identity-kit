@@ -17,6 +17,7 @@ import { Secret, TOTP } from 'otpauth';
 import { type Credentials, createCredentials } from './credentials.ts';
 import { randomBase32 } from './encoding.ts';
 import { IdentityError } from './errors.ts';
+import { recordEvent } from './events.ts';
 import { createMailer, type Mailer } from './mail.ts';
 import { createPgRateLimiter, limiterKey, type RateLimiter } from './ratelimit.ts';
 import { finishLogin } from './session-login.ts';
@@ -123,13 +124,22 @@ export interface Mfa {
    * except `keepSessionHash`, which is rotated instead (the change is a
    * privilege change on that session) and handed back as `rotated`.
    */
-  confirmTotpEnrolment(userId: UserId, code: string, now?: Date, keepSessionHash?: string): Promise<MfaChanged>;
+  confirmTotpEnrolment(
+    userId: UserId,
+    code: string,
+    now?: Date,
+    keepSessionHash?: string,
+    /** Recorded on the `mfa_enrolled` event. */
+    meta?: SessionMeta,
+  ): Promise<MfaChanged>;
   /** Same session policy as confirmTotpEnrolment. */
   removeTotp(
     userId: UserId,
     password: string,
     keepSessionHash?: string,
     now?: Date,
+    /** Recorded on the `mfa_removed` event. */
+    meta?: SessionMeta,
   ): Promise<{ rotated?: MfaChanged['rotated'] }>;
   verifyTotp(pendingToken: string, code: string, meta?: SessionMeta, now?: Date): Promise<SecondFactorResult>;
   verifyRecoveryCode(pendingToken: string, code: string, meta?: SessionMeta, now?: Date): Promise<SecondFactorResult>;
@@ -210,8 +220,8 @@ export function createMfa(opts: MfaOptions): Mfa {
 
   /** Revoke every session but `keep`, and rotate `keep` — an MFA change is a
    *  privilege change on the session that made it. */
-  const revokeOthersAndRotate = async (userId: UserId, keep: string | undefined, now: Date) => {
-    await revokeAllSessions(db, userId, keep);
+  const revokeOthersAndRotate = async (userId: UserId, keep: string | undefined, now: Date, meta: SessionMeta) => {
+    await revokeAllSessions(db, userId, keep, meta, now);
     if (!keep) return undefined;
     return (await rotateSession(db, keep, now, { authenticatedAt: now })) ?? undefined;
   };
@@ -380,7 +390,7 @@ export function createMfa(opts: MfaOptions): Mfa {
 
     /** Confirm enrolment with a code, and hand back recovery codes (argon2id-
      *  hashed). Enrolling a second factor revokes every existing session. */
-    async confirmTotpEnrolment(userId, code, now = clock(), keepSessionHash) {
+    async confirmTotpEnrolment(userId, code, now = clock(), keepSessionHash, meta = {}) {
       const factor = await readFactor(userId);
       if (!factor) throw new IdentityError({ code: 'enrolment_not_started' });
       const hit = checkCode(unseal(factor), code, now);
@@ -402,12 +412,13 @@ export function createMfa(opts: MfaOptions): Mfa {
             codeHash,
           ]);
         }
+        await recordEvent(tx, { userId, kind: 'mfa_enrolled', meta, at: now, metadata: { factor: 'totp' } });
       });
-      const rotated = await revokeOthersAndRotate(userId, keepSessionHash, now);
+      const rotated = await revokeOthersAndRotate(userId, keepSessionHash, now, meta);
       return { recoveryCodes: codes, rotated };
     },
 
-    async removeTotp(userId, password, keepSessionHash, now = clock()) {
+    async removeTotp(userId, password, keepSessionHash, now = clock(), meta = {}) {
       const user = await readPassword(userId);
       if (!user) throw new IdentityError({ code: 'not_found', what: `user ${userId}` });
       if (!user.password_hash) throw new IdentityError({ code: 'no_password' });
@@ -417,8 +428,9 @@ export function createMfa(opts: MfaOptions): Mfa {
       await db.transaction(async (tx) => {
         await tx.query('DELETE FROM identity.totp_factors WHERE user_id = $1', [userId]);
         await tx.query('DELETE FROM identity.recovery_codes WHERE user_id = $1', [userId]);
+        await recordEvent(tx, { userId, kind: 'mfa_removed', meta, at: now, metadata: { factor: 'totp' } });
       });
-      const rotated = await revokeOthersAndRotate(userId, keepSessionHash, now);
+      const rotated = await revokeOthersAndRotate(userId, keepSessionHash, now, meta);
       return { rotated };
     },
 
@@ -451,7 +463,7 @@ export function createMfa(opts: MfaOptions): Mfa {
         ]);
         await tx.query('DELETE FROM identity.pending_logins WHERE token_hash = $1', [pending.tokenHash]);
       });
-      return finishLogin(db, mailer, pending.userId, email, meta, now, opts.logger);
+      return finishLogin(db, mailer, pending.userId, email, meta, now, opts.logger, 'totp');
     },
 
     async verifyRecoveryCode(pendingToken, code, meta = {}, now = clock()) {
@@ -489,7 +501,7 @@ export function createMfa(opts: MfaOptions): Mfa {
       await mailer
         .recoveryCodeUsed(email, unused.length - 1)
         .catch((e) => warn(`recovery-code mail failed: ${String(e)}`));
-      return finishLogin(db, mailer, pending.userId, email, meta, now, opts.logger);
+      return finishLogin(db, mailer, pending.userId, email, meta, now, opts.logger, 'recovery_code');
     },
 
     async remainingRecoveryCodes(userId) {

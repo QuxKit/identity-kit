@@ -10,6 +10,7 @@
 // Expiry is enforced by comparison on read, never by the sweep. A cleanup job
 // that stops running must not silently extend everyone's session.
 
+import { DEFAULT_EVENT_RETENTION_MS, recordEvent, sweepEvents } from './events.ts';
 import { issueToken, sha256 } from './tokens.ts';
 import type { IdentityConfig, ResolvedSession, SessionMeta, SessionSummary, SqlExecutor, UserId } from './types.ts';
 
@@ -144,8 +145,21 @@ export async function resolveSession(
   return resolved;
 }
 
-export async function revokeSession(db: SqlExecutor, tokenHash: string): Promise<void> {
-  await db.query('DELETE FROM identity.sessions WHERE token_hash = $1', [tokenHash]);
+/** Revoke one session. Records `session_revoked` for its user when it existed;
+ *  `meta` is the revoking request's ip / user agent, `now` its instant. */
+export async function revokeSession(
+  db: SqlExecutor,
+  tokenHash: string,
+  meta: SessionMeta = {},
+  now?: Date,
+): Promise<void> {
+  const rows = await db.query<{ user_id: string }>(
+    'DELETE FROM identity.sessions WHERE token_hash = $1 RETURNING user_id',
+    [tokenHash],
+  );
+  const row = rows[0];
+  if (!row) return;
+  await recordEvent(db, { userId: row.user_id, kind: 'session_revoked', meta, at: now, metadata: { count: 1 } });
 }
 
 /**
@@ -155,7 +169,13 @@ export async function revokeSession(db: SqlExecutor, tokenHash: string): Promise
  * *how* the account authenticates invalidates everything that authenticated
  * under the old rules. Returns how many were revoked.
  */
-export async function revokeAllSessions(db: SqlExecutor, userId: UserId, exceptTokenHash?: string): Promise<number> {
+export async function revokeAllSessions(
+  db: SqlExecutor,
+  userId: UserId,
+  exceptTokenHash?: string,
+  meta: SessionMeta = {},
+  now?: Date,
+): Promise<number> {
   const rows = exceptTokenHash
     ? await db.query<{ token_hash: string }>(
         'DELETE FROM identity.sessions WHERE user_id = $1 AND token_hash <> $2 RETURNING token_hash',
@@ -164,6 +184,15 @@ export async function revokeAllSessions(db: SqlExecutor, userId: UserId, exceptT
     : await db.query<{ token_hash: string }>('DELETE FROM identity.sessions WHERE user_id = $1 RETURNING token_hash', [
         userId,
       ]);
+  if (rows.length > 0) {
+    await recordEvent(db, {
+      userId,
+      kind: 'session_revoked',
+      meta,
+      at: now,
+      metadata: { count: rows.length, keptOne: exceptTokenHash !== undefined },
+    });
+  }
   return rows.length;
 }
 
@@ -207,6 +236,14 @@ export interface SweepReport {
   pendingLogins: number;
   /** Rate-limit buckets idle for over a day. 0 when 005 is not applied. */
   rateLimits: number;
+  /** Security events past retention (`config.eventRetentionMs`, default 90
+   *  days). 0 when 006 is not applied. */
+  events: number;
+}
+
+export interface SweepOptions {
+  /** How long security events are kept. Default ninety days. */
+  eventRetentionMs?: number;
 }
 
 /** Rate-limit rows idle this long are pruned; a bucket that has fully refilled
@@ -219,7 +256,7 @@ const RATE_LIMIT_IDLE_MS = 24 * 60 * 60 * 1000;
  * only shrink here, and a reset or pending-login table that never shrinks is a
  * slow leak of a live-credential-shaped row per attempt.
  */
-export async function sweepExpired(db: SqlExecutor, now: Date): Promise<SweepReport> {
+export async function sweepExpired(db: SqlExecutor, now: Date, opts: SweepOptions = {}): Promise<SweepReport> {
   const count = async (sql: string, params: readonly unknown[]): Promise<number> =>
     (await db.query<{ n: string }>(sql, params)).length;
   const exists = async (table: string): Promise<boolean> => {
@@ -243,6 +280,9 @@ export async function sweepExpired(db: SqlExecutor, now: Date): Promise<SweepRep
       ? await count('DELETE FROM identity.rate_limits WHERE updated_at <= $1 RETURNING key', [
           new Date(now.getTime() - RATE_LIMIT_IDLE_MS),
         ])
+      : 0,
+    events: (await exists('events'))
+      ? await sweepEvents(db, new Date(now.getTime() - (opts.eventRetentionMs ?? DEFAULT_EVENT_RETENTION_MS)))
       : 0,
   };
 }
