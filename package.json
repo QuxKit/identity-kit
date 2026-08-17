@@ -68,6 +68,14 @@
       "import": "./dist/passkeys.mjs",
       "require": "./dist/passkeys.cjs"
     },
+    "./magic": {
+      "types": {
+        "import": "./dist/magic.d.ts",
+        "require": "./dist/magic.d.cts"
+      },
+      "import": "./dist/magic.mjs",
+      "require": "./dist/magic.cjs"
+    },
     "./pg": {
       "types": {
         "import": "./dist/pg.d.ts",

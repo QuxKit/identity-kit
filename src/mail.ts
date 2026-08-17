@@ -20,6 +20,9 @@ export interface Mailer {
   deletionRequested(to: string, token: string): Promise<void>;
   /** Used by identity-kit/mfa when a recovery code is spent. */
   recoveryCodeUsed(to: string, remaining: number): Promise<void>;
+  /** identity-kit/magic: the sign-in link, and the unknown-address counterpart. */
+  magicLink(to: string, token: string): Promise<void>;
+  magicLinkUnknownAddress(to: string): Promise<void>;
 }
 
 export function createMailer(config: IdentityConfig, sender: MailSender): Mailer {
@@ -112,6 +115,28 @@ export function createMailer(config: IdentityConfig, sender: MailSender): Mailer
         body:
           `A recovery code was used to sign in. ${remaining} remain.\n\n` +
           `If this was not you, your second factor is compromised: ${url('/settings/security')}`,
+      }),
+
+    magicLink: (to, token) =>
+      sender.send({
+        to,
+        subject: 'Your sign-in link',
+        body:
+          `Sign in:\n\n${link('/magic', token)}\n\n` +
+          `The link is valid for 15 minutes and can be used once. If you did not ` +
+          `ask for it, someone knows your email address and nothing more.`,
+      }),
+
+    // Same reasoning as resetUnknownAddress: safe because it goes only to the
+    // address itself, and it closes the loop for a mistyped address.
+    magicLinkUnknownAddress: (to) =>
+      sender.send({
+        to,
+        subject: 'Sign-in link requested',
+        body:
+          `Someone asked for a sign-in link for this address, but there is no ` +
+          `account here. You may have signed up with a different address.\n\n` +
+          `Create an account:  ${url('/signup')}`,
       }),
   };
 }

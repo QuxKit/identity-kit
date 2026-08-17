@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`@quxkit/identity-kit/magic`** — passwordless sign-in: `request({ email,
+  ipAddress })` (enumeration-safe, rate-limit action `magic_link` 5/hour, one
+  live token per user, 15-minute TTL, sha256 at rest, verified accounts only)
+  and `consume({ token }, meta)` → session via `finishLogin` (`via:
+  'magic_link'`), `mfa_required` when a second factor is wired, or `invalid`;
+  event `magic_link_used`; `sweep`. Table `identity.magic_link_tokens`
+  (`sql/008_magic.sql`); `SweepReport.magicLinkTokens`. `Mailer.magicLink` /
+  `magicLinkUnknownAddress`.
+
 - **`@quxkit/identity-kit/passkeys`** — WebAuthn over `@simplewebauthn/server`
   (a runtime dependency of this subpath; external in the build):
   `registerBegin` (recent-auth `EnrolmentProof`, shared with MFA via the new

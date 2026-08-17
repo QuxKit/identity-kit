@@ -241,6 +241,8 @@ export interface SweepReport {
   events: number;
   /** Expired WebAuthn challenges. 0 when 007 is not applied. */
   webauthnChallenges: number;
+  /** Expired magic-link tokens. 0 when 008 is not applied. */
+  magicLinkTokens: number;
 }
 
 export interface SweepOptions {
@@ -288,6 +290,9 @@ export async function sweepExpired(db: SqlExecutor, now: Date, opts: SweepOption
       : 0,
     webauthnChallenges: (await exists('webauthn_challenges'))
       ? await count('DELETE FROM identity.webauthn_challenges WHERE expires_at <= $1 RETURNING challenge_hash', [now])
+      : 0,
+    magicLinkTokens: (await exists('magic_link_tokens'))
+      ? await count('DELETE FROM identity.magic_link_tokens WHERE expires_at <= $1 RETURNING token_hash', [now])
       : 0,
   };
 }

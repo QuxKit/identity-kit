@@ -22,7 +22,15 @@ const shared: Options = {
 export default defineConfig([
   {
     ...shared,
-    entry: ['src/index.ts', 'src/mfa.ts', 'src/apikeys.ts', 'src/oidc.ts', 'src/passkeys.ts', 'src/pg.ts'],
+    entry: [
+      'src/index.ts',
+      'src/mfa.ts',
+      'src/apikeys.ts',
+      'src/oidc.ts',
+      'src/passkeys.ts',
+      'src/magic.ts',
+      'src/pg.ts',
+    ],
     format: ['esm', 'cjs'],
     dts: true,
     clean: true,

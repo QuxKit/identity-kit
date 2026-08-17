@@ -155,8 +155,8 @@ way to "secure" — so the reasoning is in the code. The load-bearing parts:
 
 - **Mail transport** — the `MailSender` seam. The library composes every message
   (their shape is a security property); the host picks the relay.
-- **MFA, passkeys, API keys, and OIDC** (Google / Apple / any OpenID provider)
-  — shipped, as separate opt-in entry points, the same way billing-kit splits metering from
+- **MFA, passkeys, magic links, API keys, and OIDC** (Google / Apple / any
+  OpenID provider) — shipped, as separate opt-in entry points, the same way billing-kit splits metering from
   providers (see below).
 - **SAML** — still out of scope; an enterprise-only protocol better served by a
   dedicated gateway.
@@ -180,7 +180,9 @@ bring your own (Redis, an edge limiter) by implementing it. Keys are
 `<action>:<subject>` and the action picks the rule, so one limiter covers every
 path. Defaults (`DEFAULT_RATE_LIMITS`): signup 10/hour, login 10/5 min per
 address + IP, reset request 5/hour, verification resend 5/hour, MFA verify
-10/min per user (`createMfa` takes the same `rateLimiter` option). A refused hit throws `IdentityError` with code `rate_limited`
+10/min per user, passkey assertion 20/min per IP, magic-link request 5/hour per
+address + IP (`createMfa`, `createPasskeys` and `createMagic` take the same
+`rateLimiter` option). A refused hit throws `IdentityError` with code `rate_limited`
 and `retryAfterMs`. Pass the caller's IP as `SignupInput.ipAddress` and
 `SessionMeta.ipAddress` so the keys include it. The Postgres implementation
 needs `sql/005_hardening.sql`; `sweepExpired()` prunes idle buckets.
@@ -331,6 +333,29 @@ login — same session, new-device mail, `login_succeeded` (`via: 'passkey'`) �
 and, being two factors in one authenticator, never asks for TOTP. Apply
 `sql/007_passkeys.sql`; `sweepExpired()` prunes stale challenges.
 
+### `identity-kit/magic` — passwordless sign-in by emailed link
+
+```ts
+import { createMagic } from '@quxkit/identity-kit/magic';
+
+const magic = createMagic({ db, config, mail, secondFactor: mfa.secondFactor });
+await magic.request({ email, ipAddress });                 // { accepted: true } — always
+const r = await magic.consume({ token }, { ipAddress, userAgent });
+// { kind: 'session', token, expiresAt } | { kind: 'mfa_required', pendingToken } | { kind: 'invalid' }
+```
+
+A link is a credential that travels by mail, so it gets the reset token's
+discipline: **15 minutes**, **one live token per user**, **sha256 at rest**,
+**burned on any use** in the transaction that mints the session. `request` is
+enumeration-safe (the same acceptance and a mail on both branches, keyed through
+the rate-limit seam as `magic_link`, 5/hour per address + ip). Only a
+**verified** account gets a link — an unverified signup may be a squat on
+someone else's address, and mailing that address a login would hand the
+squatter's account (with the squatter's password still on it) to the victim.
+`consume` re-checks at redemption, goes through `finishLogin` (`via:
+'magic_link'`, plus a `magic_link_used` event), and does **not** bypass a second
+factor. Apply `sql/008_magic.sql`; `sweepExpired()` prunes expired tokens.
+
 ### `identity-kit/apikeys` — keys as their own principal
 
 ```ts
@@ -391,14 +416,15 @@ application's `users` table. `sql/001_identity.sql` declares `users`, `sessions`
 `003_apikeys.sql`, `004_oidc.sql` and `007_passkeys.sql` add the opt-in modules' tables;
 `005_hardening.sql` adds `users.last_failed_at`, `sessions.authenticated_at` and
 the `rate_limits` table (required by the core); `007_passkeys.sql` adds
-`passkeys` and `webauthn_challenges` for the passkeys module; `006_events.sql` adds the
+`passkeys` and `webauthn_challenges` for the passkeys module; `008_magic.sql`
+adds `magic_link_tokens`; `006_events.sql` adds the
 security-events log (required by the core; keyed by a text `user_id` with no
 foreign key, because API-key events are keyed by an opaque owner — purge deletes
 them explicitly). Everything else cascades on delete; every file is re-runnable,
 applied in order:
 
 ```sh
-for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening 006_events 007_passkeys; do
+for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening 006_events 007_passkeys 008_magic; do
   psql -v ON_ERROR_STOP=1 -f "node_modules/@quxkit/identity-kit/sql/$f.sql"
 done
 ```
