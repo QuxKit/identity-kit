@@ -1,45 +1,40 @@
-# identity-kit
+# @quxkit/identity-kit
+
+**QuxKit** · gold stone · accounts, credentials, sessions
 
 User identity and authentication as a library, for the app you already run.
 
-```mermaid
-flowchart LR
-    cred(["credentials<br/>email + password"])
-
-    subgraph IK["identity-kit — Apache-2.0"]
-        direction LR
-        ac["accounts<br/>signup · login · reset"]
-        pw["credentials<br/>argon2id + pepper"]
-        se["sessions<br/>server-side, revocable"]
-        ac --> pw
-        ac --> se
-    end
-
-    subgraph HOST["your app"]
-        db[("your database<br/>identity schema")]
-        mx["mail transport"]
-    end
-
-    cred --> ac
-    se -->|UserId| out(["UserId"])
-    IK -->|SqlExecutor| db
-    ac -->|MailSender| mx
-
-    classDef own fill:#0d9488,stroke:#0f766e,color:#ffffff;
-    classDef host fill:#1e293b,stroke:#0f172a,color:#e2e8f0;
-    class ac,pw,se own;
-    class db,mx host;
-    class cred,out host;
+```
+ credentials                                  your app
+ email + password                             ────────
+   │                                          your database
+   ▼                                          (identity schema)
+ ┌──────────────────────────────────┐               ▲
+ │  accounts   signup · login       │  SqlExecutor  │
+ │             reset · verify       │───────────────┘
+ │     │                            │
+ │     ├──▶ credentials             │  MailSender
+ │     │    argon2id + pepper       │───────────────▶ mail transport
+ │     │                            │
+ │     └──▶ sessions                │
+ │          server-side, revocable  │
+ └──────────────────────────────────┘
+   @quxkit/identity-kit — Apache-2.0
+                 │
+                 ▼
+              UserId        ← what the rest of the family consumes
 ```
 
-identity-kit owns the teal boxes: what a user **is**, how they **prove it**
+_Rendered diagrams (mermaid): [docs/DIAGRAMS.md](https://github.com/QuxKit/identity-kit/blob/main/docs/DIAGRAMS.md)._
+
+identity-kit owns the framed box: what a user **is**, how they **prove it**
 (argon2id credentials, server-side sessions), and the account lifecycle around
 that — signup, email verification, password reset, deletion. It produces a
 `UserId` and stops there. Your app owns the database it writes to (through a
 narrow executor) and the transport its mail goes out on (through a seam).
 
-Apache-2.0, sibling to [tenant-kit](http://localhost:3003/brett/tenant-kit) and
-[billing-kit](http://localhost:3003/brett/billing-kit): same executor interface,
+Apache-2.0, sibling to [tenant-kit](https://github.com/QuxKit/tenant-kit) and
+[billing-kit](https://github.com/QuxKit/billing-kit): same executor interface,
 same design rules, same "library not platform" stance.
 
 ## Where it sits in the family
@@ -48,12 +43,14 @@ tenant-kit's own README says *"your app owns everything else — its users, its
 auth"*. That is the seam this fills. The three libraries layer, each consuming
 the one below:
 
-```mermaid
-flowchart TB
-    ik["identity-kit<br/>who you are + how you prove it"] -->|UserId| tk["tenant-kit<br/>what you belong to + isolation"]
-    tk -->|tenantId| bk["billing-kit<br/>what you owe"]
-    classDef a fill:#0d9488,stroke:#0f766e,color:#fff
-    class ik a
+```
+ @quxkit/identity-kit     who you are, and how you prove it
+        │ UserId
+        ▼
+ @quxkit/tenant-kit       what you belong to, and what stays isolated
+        │ tenantId
+        ▼
+ @quxkit/billing-kit      what you owe
 ```
 
 A `UserId` minted here is the `userId` in a tenant-kit membership and, through
@@ -82,7 +79,7 @@ with clean seams.
 ## Quickstart
 
 ```ts
-import { createIdentity } from 'identity-kit';
+import { createIdentity } from '@quxkit/identity-kit';
 
 const identity = createIdentity({
   db,                                   // any SqlExecutor (a pg.Pool adapter is ~15 lines)
@@ -144,7 +141,7 @@ Separate entry points, so an app that wants neither compiles neither.
 ### `identity-kit/mfa` — TOTP + recovery codes
 
 ```ts
-import { createMfa } from 'identity-kit/mfa';
+import { createMfa } from '@quxkit/identity-kit/mfa';
 
 const mfa = createMfa({ db, config, mail, totp: { key: process.env.TOTP_KEY!, keyVersion: 1, issuer: 'Acme' } });
 const identity = createIdentity({ db, config, mail, secondFactor: mfa.secondFactor });
@@ -161,7 +158,7 @@ safe. Recovery codes are argon2id-hashed. Apply `sql/002_mfa.sql`.
 ### `identity-kit/apikeys` — keys as their own principal
 
 ```ts
-import { createApiKeys } from 'identity-kit/apikeys';
+import { createApiKeys } from '@quxkit/identity-kit/apikeys';
 
 const keys = createApiKeys({ db, prefix: 'acme' });
 const { key } = await keys.createApiKey(ownerId, { name: 'CI', scopes: ['read'] }); // shown once
@@ -178,7 +175,7 @@ are the host's — identity-kit only authenticates. Apply `sql/003_apikeys.sql`.
 ### `identity-kit/oidc` — Sign in with Google / Apple
 
 ```ts
-import { createOidc } from 'identity-kit/oidc';
+import { createOidc } from '@quxkit/identity-kit/oidc';
 
 const oidc = createOidc({ db, providers: {
   google: { issuer: 'https://accounts.google.com', clientId, clientSecret, redirectUri },
@@ -230,6 +227,23 @@ pnpm test
 The tests assert the security properties against a real Postgres — the token
 burned in the same transaction as the write, the unique constraint on email, the
 cascade — because that behaviour is in the database, not the TypeScript.
+
+
+## The QuxKit family
+
+Libraries you embed, not services you operate. Each kit owns one narrow thing
+and composes with the rest over shared shapes — one executor interface, one
+opaque tenant id, one Money type.
+
+| Package | Stone | What it owns |
+|---|---|---|
+| [`@quxkit/identity-kit`](https://github.com/QuxKit/identity-kit) | gold | Accounts, argon2id credentials, revocable sessions — produces a `UserId`. |
+| [`@quxkit/tenant-kit`](https://github.com/QuxKit/tenant-kit) | green | Tenant directory, request→tenant resolution, row-level-security isolation. |
+| [`@quxkit/billing-kit`](https://github.com/QuxKit/billing-kit) | blue | Metering, exact pricing, a double-entry ledger, provider settlement. |
+| [`@quxkit/billing-kit-adapters`](https://github.com/QuxKit/billing-kit-adapters) | blue | Payment providers beyond Stripe and Paddle. |
+| [`tenant-kit-adapters`](https://github.com/QuxKit/tenant-kit-adapters) | green | Enterprise SSO, SCIM provisioning, RBAC-engine bridges. |
+| [`billing-kit-components`](https://github.com/QuxKit/billing-kit-components) | blue | shadcn-compatible billing UI, per seat. |
+| [`@quxkit/billing-kit-mcp`](https://github.com/QuxKit/billing-kit-mcp) | blue | Exact money math for AI assistants over MCP. |
 
 ## Licence
 
