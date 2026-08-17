@@ -53,8 +53,13 @@ export interface IdentityConfig {
    *  the database and out of the backup. */
   pepper: string;
   /** The version stamped on hashes made with the current pepper. Rotation bumps
-   *  it, keeps the old key available, and re-peppers on next successful login. */
+   *  it, keeps the old key available in `previousPeppers`, and re-peppers on
+   *  next successful login. */
   pepperVersion: number;
+  /** Retired peppers by version, so a hash made under an older one still
+   *  verifies (and is re-peppered on that login). Drop a version only once no
+   *  row carries it. */
+  previousPeppers?: Record<number, string>;
   /** Base URL for the links in transactional mail (`https://app.example.com`). */
   appUrl: string;
   /**

@@ -72,11 +72,16 @@ export function createCredentials(config: IdentityConfig): Credentials {
    * would make a hash that writes successfully and never verifies — every
    * password wrong, nothing in the logs.
    */
+  const peppers = new Map<number, string>(
+    Object.entries(config.previousPeppers ?? {}).map(([v, k]) => [Number(v), k] as const),
+  );
+  peppers.set(config.pepperVersion, config.pepper);
   const pepper = (password: string, version: number): string => {
-    if (version !== config.pepperVersion) {
+    const key = peppers.get(version);
+    if (key === undefined) {
       throw new IdentityError({ code: 'pepper_version', stored: version, current: config.pepperVersion });
     }
-    return createHmac('sha256', config.pepper).update(password, 'utf8').digest('base64');
+    return createHmac('sha256', key).update(password, 'utf8').digest('base64');
   };
 
   // A hash of a value nobody knows, computed once and reused, so the
@@ -89,8 +94,11 @@ export function createCredentials(config: IdentityConfig): Credentials {
   };
 
   const verifyPassword = async (stored: string, password: string, pepperVersion: number): Promise<boolean> => {
+    // Outside the try: a pepper version this process does not hold is an
+    // operational error to surface, not a wrong password to swallow.
+    const peppered = pepper(password, pepperVersion);
     try {
-      return await argonVerify(stored, pepper(password, pepperVersion), PARAMS);
+      return await argonVerify(stored, peppered, PARAMS);
     } catch {
       // A malformed stored hash fails as "wrong password", not as a 500 that
       // tells an attacker they found a row with a corrupt hash.

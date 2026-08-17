@@ -15,7 +15,7 @@ after(async () => {
 
 describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
   const h = harness as Harness;
-  const id = createIdentity({ db: h.db, config: testConfig, mail: h.mail });
+  const id = createIdentity({ db: h.db, config: testConfig, mail: h.mail, rateLimiter: null });
 
   const userCount = async (email: string): Promise<number> => {
     const rows = await h.db.query<{ n: string }>('SELECT count(*)::text AS n FROM identity.users WHERE email = $1', [
@@ -102,6 +102,80 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
       'erin@example.com',
     ]);
     assert.equal(resolved?.userId, one(rows).id);
+  });
+
+  it('counts concurrent failed logins exactly (the counter is incremented in place)', async () => {
+    await makeVerifiedUser('con@example.com', 'correct horse battery');
+    const now = new Date();
+    const N = 8;
+    const results = await Promise.all(
+      Array.from({ length: N }, () => id.login({ email: 'con@example.com', password: 'wrong' }, {}, now)),
+    );
+    assert.ok(results.every((r) => r.kind === 'failed'));
+    const row = one(
+      await h.db.query<{ failed_logins: number; last_failed_at: Date | null; locked_until: Date | null }>(
+        'SELECT failed_logins, last_failed_at, locked_until FROM identity.users WHERE email = $1',
+        ['con@example.com'],
+      ),
+    );
+    assert.equal(row.failed_logins, N, 'no increment lost to a concurrent read-then-write');
+    assert.ok(row.last_failed_at, 'last_failed_at is stamped');
+    // 8 failures = 3 past the threshold; the lock is the longest one computed
+    assert.ok(
+      row.locked_until && row.locked_until.getTime() - now.getTime() >= 4000,
+      'lock reflects the highest count',
+    );
+    // and a correct password clears it once the lock lapses
+    const later = new Date(now.getTime() + 60_000);
+    assert.equal(
+      (await id.login({ email: 'con@example.com', password: 'correct horse battery' }, {}, later)).kind,
+      'session',
+    );
+  });
+
+  it('re-peppers a hash made under an older pepper version on next login', async () => {
+    await makeVerifiedUser('pepper@example.com', 'correct horse battery');
+    const version = async () =>
+      one(
+        await h.db.query<{ pepper_version: number }>('SELECT pepper_version FROM identity.users WHERE email = $1', [
+          'pepper@example.com',
+        ]),
+      ).pepper_version;
+    assert.equal(await version(), 1);
+
+    // A process without the old key: the cause surfaces, not a "wrong password".
+    const noOldKey = createIdentity({
+      db: h.db,
+      config: { ...testConfig, pepper: 'pepper-two', pepperVersion: 2 },
+      mail: h.mail,
+      rateLimiter: null,
+    });
+    await assert.rejects(
+      () => noOldKey.login({ email: 'pepper@example.com', password: 'correct horse battery' }),
+      (e: unknown) => IdentityError.hasCode(e, 'pepper_version') && e.failure.stored === 1 && e.failure.current === 2,
+    );
+
+    // A rotated process holding both keys: the login succeeds and re-peppers.
+    const rotated = createIdentity({
+      db: h.db,
+      config: { ...testConfig, pepper: 'pepper-two', pepperVersion: 2, previousPeppers: { 1: testConfig.pepper } },
+      mail: h.mail,
+      rateLimiter: null,
+    });
+    assert.equal(
+      (await rotated.login({ email: 'pepper@example.com', password: 'correct horse battery' })).kind,
+      'session',
+    );
+    assert.equal(await version(), 2, 'the hash was re-peppered under the current version');
+    assert.equal(
+      (await rotated.login({ email: 'pepper@example.com', password: 'correct horse battery' })).kind,
+      'session',
+    );
+    await assert.rejects(
+      () => id.login({ email: 'pepper@example.com', password: 'correct horse battery' }),
+      (e: unknown) => IdentityError.hasCode(e, 'pepper_version') && e.failure.stored === 2,
+      'a process still on v1 cannot verify the re-peppered hash — legibly',
+    );
   });
 
   it('backs off after repeated failures instead of hard-locking', async () => {
