@@ -1,7 +1,7 @@
 {
   "name": "@quxkit/identity-kit",
-  "version": "0.1.0",
-  "description": "User identity and authentication as a library — accounts, credentials and sessions, over a provider-agnostic executor.",
+  "version": "0.2.0",
+  "description": "User identity and authentication as a library \u2014 accounts, credentials and sessions, over a provider-agnostic executor.",
   "license": "Apache-2.0",
   "author": "BRETT",
   "type": "module",
