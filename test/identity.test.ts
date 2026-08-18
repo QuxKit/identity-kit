@@ -297,6 +297,33 @@ describe('identity-kit', { skip: harness === null ? SKIP_REASON : false }, () =>
     assert.match(h.mail.first('kim@example.com').body, /unrecognised device/, 'no IP given: a generic phrase');
   });
 
+  it('signup stamps created_at from the injected clock, so purgeUnverified can see it', async () => {
+    // Regression: created_at used to default to the database's now(). A caller
+    // that injects a clock then purges against it deleted nothing whenever the
+    // two disagreed -- which, with a fixed test clock, is most of the day.
+    const frozen = new Date('2026-08-17T00:00:00Z');
+    const idc = createIdentity({
+      db: h.db,
+      config: testConfig,
+      mail: h.mail,
+      clock: () => frozen,
+      rateLimiter: null,
+    });
+    h.mail.clear();
+    await idc.signup({ email: 'clock@example.com', password: 'correct horse battery' });
+    const stamped = one(
+      await h.db.query<{ created_at: Date }>('SELECT created_at FROM identity.users WHERE email = $1', [
+        'clock@example.com',
+      ]),
+    ).created_at;
+    assert.equal(stamped.getTime(), frozen.getTime(), 'created_at follows the injected clock');
+
+    const week = 7 * 24 * 60 * 60 * 1000;
+    assert.equal(await idc.purgeUnverified(new Date(frozen.getTime() + week - 1000)), 0, 'inside the window, kept');
+    assert.ok((await idc.purgeUnverified(new Date(frozen.getTime() + week + 1000))) >= 1, 'past it, purged');
+    assert.equal(await userCount('clock@example.com'), 0);
+  });
+
   it('purgeUnverified and purgeDeleted remove only what is past its window', async () => {
     const now = new Date();
     const week = 7 * 24 * 60 * 60 * 1000;

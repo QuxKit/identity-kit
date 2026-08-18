@@ -201,9 +201,9 @@ export function createAccounts(deps: AccountsDeps): Accounts {
 
       const passwordHash = await credentials.hashPassword(input.password);
       const inserted = await db.query<{ id: string }>(
-        `INSERT INTO identity.users (email, email_display, name, password_hash, pepper_version)
-         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-        [email, input.email.trim(), input.name ?? null, passwordHash, config.pepperVersion],
+        `INSERT INTO identity.users (email, email_display, name, password_hash, pepper_version, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [email, input.email.trim(), input.name ?? null, passwordHash, config.pepperVersion, clock()],
       );
       // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING yields exactly one row
       const userId = inserted[0]!.id;
