@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `signup` stamps `identity.users.created_at` from the injected `clock` instead of
+  letting it default to the database's `now()`. The two clocks could disagree, so
+  `purgeUnverified` — which derives its cutoff from the injected clock — silently
+  deleted nothing and unverified accounts accumulated. A regression test pins the
+  stamp and both sides of the window.
+
 ### Added
 
 - **Breached-password screening (opt-in)** — `passwordBreached(fetch, { endpoint?,
