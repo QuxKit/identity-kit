@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-17
+
 ### Fixed
 
 - `signup` stamps `identity.users.created_at` from the injected `clock` instead of
