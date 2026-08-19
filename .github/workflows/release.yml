@@ -29,7 +29,7 @@ jobs:
       REQUIRE_DB: '1'
       IDENTITY_KIT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/identity_kit_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
