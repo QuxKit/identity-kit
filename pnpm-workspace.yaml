@@ -1,2 +1,6 @@
+# esbuild's install step fetches the platform binary. tsup bundles through
+# esbuild, so without it the build has no compiler — this must be true. pnpm
+# wrote this file as a prompt and it was left unanswered, which made
+# `--frozen-lockfile` fail outright under pnpm 11 (ERR_PNPM_IGNORED_BUILDS).
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
