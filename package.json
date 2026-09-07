@@ -1,6 +1,6 @@
 {
   "name": "@quxkit/identity-kit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "packageManager": "pnpm@11.20.0",
   "description": "User identity and authentication as a library \u2014 accounts, credentials and sessions, over a provider-agnostic executor.",
   "license": "Apache-2.0",
@@ -61,6 +61,14 @@
       "import": "./dist/oidc.mjs",
       "require": "./dist/oidc.cjs"
     },
+    "./provider": {
+      "types": {
+        "import": "./dist/provider.d.ts",
+        "require": "./dist/provider.d.cts"
+      },
+      "import": "./dist/provider.mjs",
+      "require": "./dist/provider.cjs"
+    },
     "./passkeys": {
       "types": {
         "import": "./dist/passkeys.d.ts",
@@ -119,6 +127,7 @@
   "dependencies": {
     "@node-rs/argon2": "^2.0.0",
     "@simplewebauthn/server": "^13.3.2",
+    "jose": "^6.2.12",
     "openid-client": "^6.8.5",
     "otpauth": "^9.3.0"
   },
