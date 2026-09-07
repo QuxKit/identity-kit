@@ -1,6 +1,6 @@
 {
   "name": "@quxkit/identity-kit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "packageManager": "pnpm@11.20.0",
   "description": "User identity and authentication as a library \u2014 accounts, credentials and sessions, over a provider-agnostic executor.",
   "license": "Apache-2.0",
