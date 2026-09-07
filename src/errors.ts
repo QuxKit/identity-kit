@@ -37,6 +37,16 @@ export type IdentityFailure =
   | { code: 'unknown_provider'; provider: string }
   /** oidc: the token response carried no ID token. */
   | { code: 'no_id_token' }
+  /** provider: the request cannot be served as asked — an unregistered
+   *  redirect_uri, missing PKCE, a client that is not first-party. Named for
+   *  OAuth's own `invalid_request`, so a route can answer in the spec's terms. */
+  | { code: 'invalid_request'; reason: string }
+  /** provider: the authorization code is unknown, already spent, expired, or
+   *  does not match the redirect_uri or PKCE verifier it was minted with. All
+   *  one code on purpose: telling a caller WHICH is telling an attacker which. */
+  | { code: 'invalid_grant'; reason: string }
+  /** provider: the client failed authentication at the token endpoint. */
+  | { code: 'invalid_client'; reason: string }
   /** passkeys: the challenge in the response is unknown, spent, expired, for
    *  another purpose, or was issued to another user. */
   | { code: 'invalid_challenge'; reason: 'unknown' | 'expired' | 'purpose' | 'user' }
@@ -53,6 +63,12 @@ export type IdentityErrorCode = IdentityFailure['code'];
 function describe(failure: IdentityFailure): string {
   switch (failure.code) {
     case 'weak_password':
+      return failure.reason;
+    // The reason IS the message for these: they are answers to an operator
+    // wiring up a client, not to a person who mistyped a password.
+    case 'invalid_request':
+    case 'invalid_grant':
+    case 'invalid_client':
       return failure.reason;
     case 'bad_credentials':
       return 'The current password is incorrect.';

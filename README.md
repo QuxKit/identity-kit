@@ -159,13 +159,71 @@ way to "secure" — so the reasoning is in the code. The load-bearing parts:
   (their shape is a security property); the host picks the relay.
 - **MFA, passkeys, magic links, API keys, and OIDC** (Google / Apple / any
   OpenID provider) — shipped, as separate opt-in entry points, the same way billing-kit splits metering from
-  providers (see below).
+  providers (see below). `identity-kit/provider` is the other direction: being
+  the issuer other apps sign in against (see [Being the issuer](#being-the-issuer)).
 - **SAML** — still out of scope; an enterprise-only protocol better served by a
   dedicated gateway.
 - **HTTP** — the core is functions, not endpoints. If you want the endpoints,
   `identity-kit/http` ships them framework-neutrally with adapters for
   `node:http`, Express and Hono; see [Mount it](#mount-it). Routing, TLS and the
   server are still the host's.
+
+## Being the issuer
+
+`identity-kit/oidc` signs your users in against somebody else. `identity-kit/provider`
+lets your app be the somebody else — one app in a family holds the accounts and
+the rest sign in against it, over the same protocol, using the client half this
+kit already ships.
+
+```ts
+import { createOidcIssuer } from '@quxkit/identity-kit/provider';
+
+const issuer = createOidcIssuer({ db, issuer: 'https://accounts.example.com' });
+
+await issuer.registerClient({
+  clientId: 'portal',
+  name: 'The storefront',
+  secret: process.env.PORTAL_CLIENT_SECRET,   // omit for a public client
+  redirectUris: ['https://example.com/api/auth/callback'],
+  firstParty: true,
+});
+```
+
+Your `/authorize` route resolves **your own** session and hands the user id over;
+the provider never reads a cookie, because whose session it is belongs to the
+host, not to the protocol:
+
+```ts
+const { redirectTo } = await issuer.authorize({
+  clientId, redirectUri, userId: session.userId,
+  state, nonce, codeChallenge, codeChallengeMethod: 'S256',
+});
+return Response.redirect(redirectTo, 303);
+```
+
+Apply `sql/009_oidc_provider.sql`, serve `issuer.discovery()` at
+`/.well-known/openid-configuration`, `issuer.jwks()`, and routes for
+`issuer.token()` and `issuer.userinfo()`.
+
+### What it deliberately is not
+
+| | |
+|---|---|
+| No refresh tokens | The consuming app exchanges the code, reads the ID token and mints **its own** session. Nothing needs a credential that outlives that exchange, and a refresh token is a long-lived bearer credential to store, rotate and revoke. |
+| No implicit or hybrid flow | Both hand tokens to a browser through a URL. |
+| No consent screen, so no third parties | A `firstParty` client skips consent, because asking somebody to authorise you to be yourself is theatre. Any other client is **refused** rather than silently consented on a user's behalf. |
+| No dynamic registration | Clients are rows an operator writes. |
+
+PKCE is **required** of every client, confidential ones included: a client secret
+protects the token request, while PKCE protects the code, and the code is the part
+that travels through a browser. `redirect_uri` is matched exactly, never by prefix —
+prefix matching is how an open redirect becomes an account takeover. Codes are
+hashed at rest, live 60 seconds, and are consumed by a guarded `UPDATE`, so two
+simultaneous redemptions cannot both win.
+
+Signing keys live in the database, not an environment variable, so `rotateKey()`
+needs no deploy. A retired key stays published in JWKS until `sweep()` drops it,
+which is after anything it signed has expired.
 
 ## Rate limiting
 
