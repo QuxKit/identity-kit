@@ -72,7 +72,7 @@ describe('identity-kit/mfa', { skip: harness === null ? SKIP_REASON : false }, (
 
     const done = await mfa.verifyTotp(login.pendingToken, codeFor(secret, t1), {}, t1);
     assert.equal(done.kind, 'session');
-    if (done.kind === 'session') assert.ok(await id.resolveSession(done.token));
+    if (done.kind === 'session') assert.ok(await id.resolveSession(done.token, t1), 'the MFA-completed session resolves at its own clock');
   });
 
   it('rejects a replayed code inside its own window', async () => {
