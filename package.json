@@ -4,7 +4,7 @@
   "packageManager": "pnpm@11.20.0",
   "description": "User identity and authentication as a library \u2014 accounts, credentials and sessions, over a provider-agnostic executor.",
   "license": "Apache-2.0",
-  "author": "BRETT",
+  "author": "QuxKit.AI (https://quxkit.ai)",
   "type": "module",
   "sideEffects": false,
   "repository": {

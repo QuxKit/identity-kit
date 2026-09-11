@@ -1,8 +1,8 @@
 identity-kit
-Copyright 2026 BRETT
+Copyright 2026 QuxKit.AI (https://quxkit.ai)
 
-This product includes software developed as part of the billing-kit family.
-Licensed under the Apache License, Version 2.0.
+This product includes software developed as part of the QuxKit family
+(https://quxkit.ai). Licensed under the Apache License, Version 2.0.
 
 Ported from an internal auth implementation (ai_member_cloud) to a
 provider-agnostic library: the ORM was replaced with a raw-SQL executor and all
