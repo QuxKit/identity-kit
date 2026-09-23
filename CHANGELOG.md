@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `IdentityConfig.registration` closes account creation — `'open'` (the default,
+  so nothing changes for an existing host), `'closed'`, or a function asked per
+  attempt. Honoured on BOTH doors into `identity.users`: `signup`, and the
+  new-user branch of `linkOrCreate`. Existing accounts sign in either way —
+  closing registration locks the door, it does not evict anyone.
+- `identity.linkOrCreate(claims, now?)` on the instance, which passes the
+  configured policy for you. Prefer it over the free function in
+  `identity-kit/oidc`: an optional argument on the path hosts think of as
+  "logging in" is how social sign-in quietly keeps creating accounts after
+  signups were closed.
+- `SignupInput.invite`, passed through untouched to the `registration` policy.
+  This kit has no invite store and never validates one, which is why
+  invite-only is a function rather than a mode. `POST /signup` forwards a body
+  `invite` field.
+- `registration_closed` failure code (HTTP 403), the `LinkResult` variant
+  `{ kind: 'registration_closed' }`, and the `registrationPolicy` /
+  `assertRegistrationAllowed` helpers.
+
+### Note for hosts calling `linkOrCreate` directly
+
+Its new fourth argument is optional, so existing calls compile unchanged — and
+keep creating accounts whatever `registration` says. Switch to
+`identity.linkOrCreate(...)`, or pass `{ registration: config.registration }`.
+
 ## [0.2.0] - 2026-08-17
 
 ### Fixed

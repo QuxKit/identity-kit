@@ -10,6 +10,7 @@ import { type Accounts, createAccounts } from './accounts.ts';
 import { createCredentials } from './credentials.ts';
 import { createEvents, type Events } from './events.ts';
 import { createMailer } from './mail.ts';
+import { type LinkResult, linkOrCreate, type ProviderClaims } from './oidc-link.ts';
 import { createPgRateLimiter, type RateLimiter } from './ratelimit.ts';
 import {
   clearedSessionCookie,
@@ -73,6 +74,17 @@ export interface Identity extends Accounts {
   sweepExpired(now?: Date): Promise<SweepReport>;
   /** The security-events log (`sql/006_events.sql`): `list`, `record`, `sweep`. */
   events: Events;
+  // --- oidc ---
+  /**
+   * Resolve a provider's claims to a local user, creating one if the linking
+   * rules and `config.registration` both allow it.
+   *
+   * This is the supported way to call it. The free function in
+   * `identity-kit/oidc` takes the policy as an optional argument, and an
+   * optional argument on the one path a host thinks of as "logging in" is how
+   * social sign-in quietly keeps creating accounts after signups were closed.
+   */
+  linkOrCreate(claims: ProviderClaims, now?: Date): Promise<LinkResult>;
   // --- cookies (config-driven; the host may ignore these and set its own) ---
   cookieName(): string;
   sessionCookie(token: string, expiresAt: Date, now?: Date): string;
@@ -107,6 +119,7 @@ export function createIdentity(opts: IdentityOptions): Identity {
     sweepExpiredSessions: (now) => sweepExpiredSessions(db, now ?? clock()),
     sweepExpired: (now) => sweepExpired(db, now ?? clock(), { eventRetentionMs: config.eventRetentionMs }),
     events: createEvents(db, clock, config.eventRetentionMs),
+    linkOrCreate: (claims, now) => linkOrCreate(db, claims, now ?? clock(), { registration: config.registration }),
     cookieName: () => cookieName(config),
     sessionCookie: (token, expiresAt, now) => sessionCookie(config, token, expiresAt, now ?? clock()),
     clearedSessionCookie: () => clearedSessionCookie(config),

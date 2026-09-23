@@ -182,5 +182,5 @@ export function createOidc(opts: OidcOptions): Oidc {
   };
 }
 
-export type { LinkResult, ProviderClaims } from './oidc-link.ts';
+export type { LinkOptions, LinkResult, ProviderClaims } from './oidc-link.ts';
 export { linkOrCreate } from './oidc-link.ts';

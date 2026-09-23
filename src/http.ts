@@ -174,6 +174,9 @@ const STATUS: Partial<Record<IdentityErrorCode, number>> = {
   passkey_verification_failed: 400,
   passkey_counter_regression: 403,
   unknown_provider: 404,
+  // Forbidden, not 400: the request is well formed and the server is refusing
+  // it — and the refusal is about the server's state, never this address.
+  registration_closed: 403,
 };
 
 /** Map an IdentityError to a response; anything else propagates. */
@@ -269,6 +272,9 @@ export function routes(opts: RoutesOptions): Routes {
       password: str(b, 'password') as string,
       name: str(b, 'name'),
       ipAddress: req.ip ?? null,
+      // Passed through untouched: only the host's `registration` policy knows
+      // what an invite means. A closed door answers 403.
+      invite: str(b, 'invite'),
     });
     return json(202, { accepted: true });
   });

@@ -27,6 +27,10 @@ export type IdentityFailure =
   | { code: 'reauth_required' }
   /** A construction-time misconfiguration (a malformed key, a bad prefix). */
   | { code: 'invalid_config'; reason: string }
+  /** Registration is closed, or the `registration` policy refused this attempt.
+   *  Not an oracle: the answer cannot depend on whether the address exists,
+   *  which is what lets signup throw it and stay enumeration-safe. */
+  | { code: 'registration_closed'; reason: string }
   /** confirmTotpEnrolment before beginTotpEnrolment. */
   | { code: 'enrolment_not_started' }
   /** The TOTP code did not verify at enrolment. */
@@ -86,6 +90,9 @@ function describe(failure: IdentityFailure): string {
     case 'reauth_required':
       return 'This action requires recent authentication.';
     case 'invalid_config':
+      return failure.reason;
+    // Written by the host for the person who tried, so the reason IS the message.
+    case 'registration_closed':
       return failure.reason;
     case 'enrolment_not_started':
       return 'TOTP enrolment has not been started for this user.';
