@@ -16,12 +16,15 @@
 //      duplicate is impossible (unique email). The host asks the user to sign in
 //      the existing way first, then link from settings.
 //   4. Otherwise -> create a new user, email verified only if the provider
-//      verified it. No password.
+//      verified it. No password — subject to `registration`, because this is
+//      the second door into identity.users and the one a host closing signups
+//      forgets, social sign-in reading as "logging in".
 //
 // A provider that returns no email cannot create a user in this schema (email is
 // NOT NULL, UNIQUE), so that is its own outcome rather than a swallowed error.
 
-import type { SqlExecutor } from './types.ts';
+import { registrationPolicy } from './registration.ts';
+import type { RegistrationSetting, SqlExecutor } from './types.ts';
 
 export interface ProviderClaims {
   /** The provider key, e.g. 'google' or 'apple'. */
@@ -43,11 +46,33 @@ export type LinkResult =
   | { kind: 'conflict'; email: string }
   /** The provider returned no email; this schema cannot create a user without
    *  one. Request the `email` scope. */
-  | { kind: 'no_email' };
+  | { kind: 'no_email' }
+  /** No account exists for this identity and `registration` refused to create
+   *  one. Only ever returned for a would-be NEW user: an existing account signs
+   *  in through the branches above whatever registration says. */
+  | { kind: 'registration_closed'; email: string; reason: string };
+
+export interface LinkOptions {
+  /**
+   * Whether a NEW account may be created here. Omitted means open, which is
+   * what this function did before the option existed.
+   *
+   * Prefer `identity.linkOrCreate(...)` on the instance, which passes the
+   * configured policy for you — an optional argument on a free function is
+   * exactly the thing a host forgets, and forgetting it here silently reopens
+   * registration through the social door.
+   */
+  registration?: RegistrationSetting;
+}
 
 const normalise = (email: string) => email.trim().toLowerCase();
 
-export async function linkOrCreate(db: SqlExecutor, claims: ProviderClaims, now: Date): Promise<LinkResult> {
+export async function linkOrCreate(
+  db: SqlExecutor,
+  claims: ProviderClaims,
+  now: Date,
+  options: LinkOptions = {},
+): Promise<LinkResult> {
   // 1. Already linked — the only path that needs no email reasoning at all.
   const linked = await db.query<{ user_id: string }>(
     'SELECT user_id FROM identity.oauth_identities WHERE provider = $1 AND subject = $2',
@@ -77,7 +102,13 @@ export async function linkOrCreate(db: SqlExecutor, claims: ProviderClaims, now:
     return { kind: 'conflict', email };
   }
 
-  // 4. New user. No password; email verified only if the provider verified it.
+  // 4. New user. Everything above this line is an EXISTING account signing in
+  // and is never refused — closing registration locks the door, it does not
+  // evict anyone.
+  const decision = await registrationPolicy(options.registration)({ email, via: 'oidc' });
+  if (!decision.allow) return { kind: 'registration_closed', email, reason: decision.reason };
+
+  // No password; email verified only if the provider verified it.
   const created = await db.transaction(async (tx) => {
     const rows = await tx.query<{ id: string }>(
       `INSERT INTO identity.users (email, email_display, email_verified_at, password_hash)
