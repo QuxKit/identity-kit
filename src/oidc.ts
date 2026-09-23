@@ -23,7 +23,7 @@ import * as oauth from 'openid-client';
 
 import { IdentityError } from './errors.ts';
 import { type LinkResult, linkOrCreate, type ProviderClaims } from './oidc-link.ts';
-import type { Clock, SqlExecutor } from './types.ts';
+import type { Clock, RegistrationSetting, SqlExecutor } from './types.ts';
 
 export interface OidcProvider {
   /** The issuer URL — `https://accounts.google.com`, `https://appleid.apple.com`. */
@@ -61,6 +61,17 @@ export interface OidcOptions {
   db: SqlExecutor;
   providers: Record<string, OidcProvider>;
   clock?: Clock;
+  /**
+   * Whether a social sign-in may CREATE an account, as opposed to signing an
+   * existing one in. Pass the same value as `IdentityConfig.registration`;
+   * omitted means open.
+   *
+   * This is the one that matters in practice. `complete()` is how a host
+   * actually does social sign-in, so a policy set on the identity instance and
+   * not here would close the password door and leave this one open — which is
+   * the whole failure this setting exists to prevent.
+   */
+  registration?: RegistrationSetting;
 }
 
 export interface BeginResult {
@@ -176,7 +187,9 @@ export function createOidc(opts: OidcOptions): Oidc {
         email: claims.email,
         emailVerified: claims.emailVerified,
       };
-      const outcome = await linkOrCreate(opts.db, providerClaims, clock());
+      const outcome = await linkOrCreate(opts.db, providerClaims, clock(), {
+        registration: opts.registration,
+      });
       return { outcome, claims };
     },
   };

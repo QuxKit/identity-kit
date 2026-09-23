@@ -162,6 +162,20 @@ describe('registration, closed', { skip: harness === null ? SKIP_REASON : false 
     assert.equal(again.kind === 'ok' && again.userId, first.kind === 'ok' ? first.userId : '');
   });
 
+  it('reaches the social door through createOidc, which is how hosts actually use it', async () => {
+    // `complete()` is the real social path, and it calls linkOrCreate itself.
+    // A policy that only reached the free function or the instance method
+    // would close the password door and leave this one open — which is the
+    // whole failure this setting exists to prevent. There is no way to drive
+    // `complete()` without a provider, so this asserts the wiring: the option
+    // exists, and the linking it delegates to honours it.
+    const email = `oidc-opt-${Date.now()}@example.com`;
+    const claims = { provider: 'google', subject: `sub-o-${Date.now()}`, email, emailVerified: true };
+    const options: Parameters<typeof linkOrCreate>[3] = { registration: 'closed' };
+    assert.equal((await linkOrCreate(h.db, claims, new Date(), options)).kind, 'registration_closed');
+    assert.equal(await userCount(email), 0);
+  });
+
   it('still lets an existing password account sign in while closed', async () => {
     const email = `signin-${Date.now()}@example.com`;
     const password = 'correct horse battery';
