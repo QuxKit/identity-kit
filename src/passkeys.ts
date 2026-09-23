@@ -19,7 +19,7 @@
 
 import {
   type AuthenticationResponseJSON,
-  type AuthenticatorTransportFuture,
+  type AuthenticatorTransport,
   generateAuthenticationOptions,
   generateRegistrationOptions,
   type PublicKeyCredentialCreationOptionsJSON,
