@@ -248,7 +248,7 @@ export function createPasskeys(opts: PasskeysOptions): Passkeys {
         // Refuse to re-register an authenticator that is already on the account.
         excludeCredentials: existing.map((r) => ({
           id: r.id,
-          transports: r.transports as AuthenticatorTransportFuture[],
+          transports: r.transports as AuthenticatorTransport[],
         })),
         authenticatorSelection: { residentKey: 'preferred', userVerification },
         timeout: ttlMs,
@@ -314,7 +314,7 @@ export function createPasskeys(opts: PasskeysOptions): Passkeys {
         rpID: rp.id,
         userVerification,
         timeout: ttlMs,
-        allowCredentials: allow.map((r) => ({ id: r.id, transports: r.transports as AuthenticatorTransportFuture[] })),
+        allowCredentials: allow.map((r) => ({ id: r.id, transports: r.transports as AuthenticatorTransport[] })),
       });
       await storeChallenge(options.challenge, 'authenticate', o.userId ?? null, now);
       return options;
@@ -375,7 +375,7 @@ export function createPasskeys(opts: PasskeysOptions): Passkeys {
             id: cred.id,
             publicKey: new Uint8Array(cred.public_key),
             counter: stored,
-            transports: cred.transports as AuthenticatorTransportFuture[],
+            transports: cred.transports as AuthenticatorTransport[],
           },
         });
         verified = v.verified;
