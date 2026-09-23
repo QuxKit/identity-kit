@@ -12,6 +12,7 @@ import { IdentityError } from './errors.ts';
 import { deleteEventsFor, recordEvent } from './events.ts';
 import type { Mailer } from './mail.ts';
 import { limiterKey, type RateLimiter } from './ratelimit.ts';
+import { assertRegistrationAllowed } from './registration.ts';
 import { finishLogin } from './session-login.ts';
 import { revokeAllSessions, rotateSession } from './sessions.ts';
 import { expiresIn, issueToken, sha256 } from './tokens.ts';
@@ -186,10 +187,16 @@ export function createAccounts(deps: AccountsDeps): Accounts {
      * against a fixed dummy instead, which is what keeps the timing equal.
      */
     async signup(input) {
+      const email = normaliseEmail(input.email);
+      // Asked FIRST, and deliberately before the address is looked up: a closed
+      // door costs nothing to refuse, and the answer cannot depend on whether
+      // the address exists — which is what lets this, the one branch here that
+      // throws, leave the enumeration-safety of the rest intact.
+      await assertRegistrationAllowed(config.registration, { email, via: 'password', invite: input.invite });
+
       const problem = await passwordProblemAsync(config, input.password);
       if (problem) throw new IdentityError({ code: 'weak_password', reason: problem });
 
-      const email = normaliseEmail(input.email);
       await limit(limiterKey('signup', email, input.ipAddress));
 
       const existing = await findByEmail(email);
