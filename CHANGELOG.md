@@ -22,6 +22,10 @@ All notable changes to this project are documented here. The format follows
   This kit has no invite store and never validates one, which is why
   invite-only is a function rather than a mode. `POST /signup` forwards a body
   `invite` field.
+- `OidcOptions.registration` — `createOidc(...).complete()` is how a host
+  actually does social sign-in, and it calls `linkOrCreate` itself, so a policy
+  set only on the identity instance would have closed the password door and
+  left this one open. Pass the same value in both places.
 - `registration_closed` failure code (HTTP 403), the `LinkResult` variant
   `{ kind: 'registration_closed' }`, and the `registrationPolicy` /
   `assertRegistrationAllowed` helpers.
