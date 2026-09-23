@@ -38,6 +38,7 @@ export type {
   RateLimitRules,
 } from './ratelimit.ts';
 export { createMemoryRateLimiter, createPgRateLimiter, DEFAULT_RATE_LIMITS, limiterKey } from './ratelimit.ts';
+export { assertRegistrationAllowed, registrationPolicy } from './registration.ts';
 export type { LoginMethod } from './session-login.ts';
 export { finishLogin } from './session-login.ts';
 export type { ResolveOptions, SweepOptions, SweepReport } from './sessions.ts';
@@ -58,7 +59,6 @@ export {
 } from './sessions.ts';
 export type { IssuedToken } from './tokens.ts';
 export { expiresIn, issueToken, sha256 } from './tokens.ts';
-
 export type {
   Clock,
   IdentityConfig,
@@ -66,6 +66,10 @@ export type {
   LoginResult,
   MailSender,
   Message,
+  RegistrationAttempt,
+  RegistrationDecision,
+  RegistrationPolicy,
+  RegistrationSetting,
   ResetResult,
   ResolvedSession,
   SecondFactor,

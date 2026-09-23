@@ -91,7 +91,43 @@ export interface IdentityConfig {
    * failure. Omitted, no screening happens and nothing is fetched.
    */
   breachedPasswords?: (password: string) => Promise<number>;
+  /**
+   * Whether new accounts may be created, asked on BOTH doors into
+   * `identity.users`: `signup`, and the new-user branch of `linkOrCreate`.
+   * Existing accounts sign in either way — closing registration locks the
+   * door, it does not evict anyone.
+   *
+   * Omitted means `'open'`, so a host that has never set it is unaffected. A
+   * function is asked per attempt, which is what lets the answer come from a
+   * row a superadmin can change without a deploy.
+   */
+  registration?: RegistrationSetting;
 }
+
+// --- registration (a seam) --------------------------------------------------
+
+/** What is being attempted, for the `registration` policy to judge. */
+export interface RegistrationAttempt {
+  /** Normalised, lowercased. */
+  email: string;
+  /** Which door: a password signup, or the new-user branch of social sign-in. */
+  via: 'password' | 'oidc';
+  /** The invite the caller presented, if any. Never validated by this kit. */
+  invite?: string;
+}
+
+export type RegistrationDecision =
+  | { allow: true }
+  /** Shown to the person who tried, so write it for them. */
+  | { allow: false; reason: string };
+
+export type RegistrationPolicy = (attempt: RegistrationAttempt) => Promise<RegistrationDecision> | RegistrationDecision;
+
+/**
+ * `'open'` (the default), `'closed'`, or a function for anything conditional —
+ * invite-only, an allow-list, a flag read from the database per attempt.
+ */
+export type RegistrationSetting = 'open' | 'closed' | RegistrationPolicy;
 
 // --- mail (a seam) ----------------------------------------------------------
 
@@ -160,6 +196,12 @@ export interface SignupInput {
   name?: string;
   /** The caller's IP, if the host has it — used only as a rate-limit key. */
   ipAddress?: string | null;
+  /**
+   * An invite the caller presented. This kit never validates it — it has no
+   * invite store — it only hands it to the `registration` policy, which is how
+   * an invite-only host lets this one attempt through a closed door.
+   */
+  invite?: string;
 }
 
 export type LoginResult =
