@@ -139,6 +139,8 @@ describe('identity-kit/http — routes', { skip: harness === null ? SKIP_REASON 
     assert.equal(await r.handle({ method: 'GET', path: '/authx/login', headers: {} }), null);
     assert.equal((await must('GET', '/login')).status, 405);
     assert.equal((await must('POST', '/apikeys/abc/def')).status, 405);
+    assert.ok(r.paths.includes('/auth/apikeys/:id/roll'));
+    assert.equal((await must('GET', '/apikeys/abc/roll')).status, 405);
   });
 
   it('rejects a non-object or malformed JSON body, and missing fields, with 400', async () => {
@@ -348,9 +350,20 @@ describe('identity-kit/http — routes', { skip: harness === null ? SKIP_REASON 
       await must('POST', '/login', { email: 'rt-f@example.com', password: 'correct horse battery' }),
       '__Host-session',
     ) as string;
+    assert.equal((await must('POST', `/apikeys/${id}/roll`, {}, cookieHeader(other))).status, 404);
+    const rolled = await must('POST', `/apikeys/${id}/roll`, { overlapMs: 3_600_000 }, cookieHeader(session));
+    assert.equal(rolled.status, 201);
+    const next = rolled.body as { id: string; key: string; replaces: string };
+    assert.equal(next.replaces, id);
+    assert.match(next.key, /^rt_test_/);
+    // The router stamps the roll with its own clock; resolve on the same one.
+    assert.ok(await apiKeys.resolveApiKey(key, now), 'the old key works through the overlap');
+    const again = await must('POST', `/apikeys/${id}/roll`, {}, cookieHeader(session));
+    assert.deepEqual([again.status, (again.body as { error: string }).error], [409, 'invalid_state']);
     assert.equal((await must('DELETE', `/apikeys/${id}`, undefined, cookieHeader(other))).status, 404);
     assert.equal((await must('DELETE', `/apikeys/${id}`, undefined, cookieHeader(session))).status, 204);
-    assert.equal(await apiKeys.resolveApiKey(key), null);
+    assert.equal(await apiKeys.resolveApiKey(key, now), null, 'revoked mid-overlap');
+    assert.ok(await apiKeys.resolveApiKey(next.key, now));
   });
 
   it('magic: request + consume', async () => {

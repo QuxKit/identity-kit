@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Rolling API keys** (`sql/011_apikey_roll.sql`, opt-in with `003`):
+  `rollApiKey(id, { overlapMs })` mints a replacement with the same owner, name,
+  scopes and environment, shown once, while the old key keeps resolving for the
+  overlap (default 24 hours, 0 to 30 days, never past an expiry it already had).
+  One replacement per key (unique index; the row is locked for the roll). A
+  revoked, expired or already-rolled key is refused with the new
+  `invalid_state` error (409 over HTTP). `revokeApiKey` works at any time and
+  ends an overlap at once. `revokeAllApiKeys(ownerId)` and `getApiKey(id)` for
+  operators. `ApiKeySummary` gains `ownerId`, `environment`, `rolledFrom`,
+  `replacedBy`, `rolledAt` and `state`; `ROLL_OVERLAPS` for dashboards. Routes:
+  `POST /apikeys/:id/roll`; the router now matches `:id` in any segment. Event:
+  `api_key_rolled`.
+
 - `IdentityConfig.registration` closes account creation — `'open'` (the default,
   so nothing changes for an existing host), `'closed'`, or a function asked per
   attempt. Honoured on BOTH doors into `identity.users`: `signup`, and the

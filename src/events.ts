@@ -24,6 +24,7 @@ export type SecurityEventKind =
   | 'mfa_removed'
   | 'api_key_issued'
   | 'api_key_revoked'
+  | 'api_key_rolled'
   | 'passkey_registered'
   | 'passkey_removed'
   | 'magic_link_used';
