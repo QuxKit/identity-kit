@@ -12,6 +12,7 @@ import { IdentityError } from './errors.ts';
 import { deleteEventsFor, recordEvent } from './events.ts';
 import type { Mailer } from './mail.ts';
 import { limiterKey, type RateLimiter } from './ratelimit.ts';
+import { realmOf, realmSubject } from './realm.ts';
 import { assertRegistrationAllowed } from './registration.ts';
 import { finishLogin } from './session-login.ts';
 import { revokeAllSessions, rotateSession } from './sessions.ts';
@@ -105,13 +106,17 @@ interface UserRow {
 export function createAccounts(deps: AccountsDeps): Accounts {
   const { db, config, credentials, mailer, clock } = deps;
   const warn = (msg: string) => deps.logger?.warn(msg);
+  // Every lookup that starts from what a caller presents is narrowed to this
+  // realm (src/realm.ts): an address or a link from another realm is not found.
+  const realm = realmOf(config);
+  const subject = (email: string) => realmSubject(realm, email);
 
   const findByEmail = async (email: string): Promise<UserRow | null> => {
     const rows = await db.query<UserRow>(
       `SELECT id, email, password_hash, pepper_version, email_verified_at,
               deletion_requested_at, failed_logins, locked_until
-         FROM identity.users WHERE email = $1`,
-      [email],
+         FROM identity.users WHERE realm = $1 AND email = $2`,
+      [realm, email],
     );
     return rows[0] ?? null;
   };
@@ -197,7 +202,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
       const problem = await passwordProblemAsync(config, input.password);
       if (problem) throw new IdentityError({ code: 'weak_password', reason: problem });
 
-      await limit(limiterKey('signup', email, input.ipAddress));
+      await limit(limiterKey('signup', subject(email), input.ipAddress));
 
       const existing = await findByEmail(email);
       if (existing) {
@@ -208,9 +213,9 @@ export function createAccounts(deps: AccountsDeps): Accounts {
 
       const passwordHash = await credentials.hashPassword(input.password);
       const inserted = await db.query<{ id: string }>(
-        `INSERT INTO identity.users (email, email_display, name, password_hash, pepper_version, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-        [email, input.email.trim(), input.name ?? null, passwordHash, config.pepperVersion, clock()],
+        `INSERT INTO identity.users (email, email_display, name, password_hash, pepper_version, created_at, realm)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        [email, input.email.trim(), input.name ?? null, passwordHash, config.pepperVersion, clock(), realm],
       );
       // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING yields exactly one row
       const userId = inserted[0]!.id;
@@ -230,8 +235,9 @@ export function createAccounts(deps: AccountsDeps): Accounts {
       const tokenHash = sha256(token);
       return db.transaction(async (tx) => {
         const rows = await tx.query<{ user_id: string; purpose: string; new_email: string | null; expires_at: Date }>(
-          'SELECT user_id, purpose, new_email, expires_at FROM identity.email_verification_tokens WHERE token_hash = $1',
-          [tokenHash],
+          `SELECT user_id, purpose, new_email, expires_at FROM identity.email_verification_tokens
+            WHERE token_hash = $1 AND user_id IN (SELECT id FROM identity.users WHERE realm = $2)`,
+          [tokenHash, realm],
         );
         const row = rows[0];
         if (row?.purpose !== 'verify_email' || row.expires_at <= now) return false;
@@ -262,7 +268,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
       const email = normaliseEmail(input.email);
       // Address + IP together: neither a distant attacker locking one victim
       // out, nor one IP spraying many accounts, gets an unmetered budget.
-      await limit(limiterKey('login', email, meta.ipAddress));
+      await limit(limiterKey('login', subject(email), meta.ipAddress));
       const user = await findByEmail(email);
 
       if (!user?.password_hash) {
@@ -325,7 +331,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
      */
     async resendVerification(rawEmail, meta = {}) {
       const email = normaliseEmail(rawEmail);
-      await limit(limiterKey('verification_resend', email, meta.ipAddress));
+      await limit(limiterKey('verification_resend', subject(email), meta.ipAddress));
       const user = await findByEmail(email);
       // Only an unverified account gets a link, and only at its own address; a
       // verified or unknown address gets nothing and the same acceptance.
@@ -338,7 +344,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
 
     async requestPasswordReset(rawEmail, meta = {}) {
       const email = normaliseEmail(rawEmail);
-      await limit(limiterKey('password_reset', email, meta.ipAddress));
+      await limit(limiterKey('password_reset', subject(email), meta.ipAddress));
       const user = await findByEmail(email);
       if (!user) {
         await mailer.resetUnknownAddress(email);
@@ -371,8 +377,9 @@ export function createAccounts(deps: AccountsDeps): Accounts {
         { kind: 'invalid' } | { kind: 'weak'; message: string } | { kind: 'ok'; email: string }
       >(async (tx) => {
         const rows = await tx.query<{ user_id: string; expires_at: Date }>(
-          'SELECT user_id, expires_at FROM identity.password_reset_tokens WHERE token_hash = $1',
-          [tokenHash],
+          `SELECT user_id, expires_at FROM identity.password_reset_tokens
+            WHERE token_hash = $1 AND user_id IN (SELECT id FROM identity.users WHERE realm = $2)`,
+          [tokenHash, realm],
         );
         const row = rows[0];
         if (!row) return { kind: 'invalid' };
@@ -436,7 +443,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
       await revokeAllSessions(db, userId, keepSessionHash);
       const result: PasswordChanged = {};
       if (keepSessionHash && config.rotateSessions) {
-        const rotated = await rotateSession(db, keepSessionHash, now, { authenticatedAt: now });
+        const rotated = await rotateSession(db, keepSessionHash, now, { authenticatedAt: now, realm });
         if (rotated) result.rotated = rotated;
       } else if (keepSessionHash) {
         await db.query('UPDATE identity.sessions SET authenticated_at = $2 WHERE token_hash = $1', [
@@ -470,8 +477,9 @@ export function createAccounts(deps: AccountsDeps): Accounts {
       const tokenHash = sha256(token);
       return db.transaction(async (tx) => {
         const rows = await tx.query<{ user_id: string; purpose: string; expires_at: Date }>(
-          'SELECT user_id, purpose, expires_at FROM identity.email_verification_tokens WHERE token_hash = $1',
-          [tokenHash],
+          `SELECT user_id, purpose, expires_at FROM identity.email_verification_tokens
+            WHERE token_hash = $1 AND user_id IN (SELECT id FROM identity.users WHERE realm = $2)`,
+          [tokenHash, realm],
         );
         const row = rows[0];
         if (row?.purpose !== 'cancel_deletion' || row.expires_at <= now) return false;

@@ -94,6 +94,7 @@ export async function setupDatabase(): Promise<Harness | null> {
     '007_passkeys.sql',
     '008_magic.sql',
     '009_oidc_provider.sql',
+    '010_realms.sql',
     '011_apikey_roll.sql',
   ]) {
     await pool.query(await readFile(fileURLToPath(new URL(`../sql/${f}`, import.meta.url)), 'utf8'));

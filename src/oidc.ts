@@ -72,6 +72,13 @@ export interface OidcOptions {
    * the whole failure this setting exists to prevent.
    */
   registration?: RegistrationSetting;
+  /**
+   * The realm social sign-in links and creates accounts in (sql/010_realms.sql).
+   * Pass the same value as `IdentityConfig.realm`, for the same reason as
+   * `registration`: omitted means the default realm, `''`, so a school's
+   * "Sign in with Google" would otherwise land in the wrong place.
+   */
+  realm?: string;
 }
 
 export interface BeginResult {
@@ -189,6 +196,7 @@ export function createOidc(opts: OidcOptions): Oidc {
       };
       const outcome = await linkOrCreate(opts.db, providerClaims, clock(), {
         registration: opts.registration,
+        realm: opts.realm,
       });
       return { outcome, claims };
     },

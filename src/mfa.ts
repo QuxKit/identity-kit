@@ -20,6 +20,7 @@ import { IdentityError } from './errors.ts';
 import { recordEvent } from './events.ts';
 import { createMailer, type Mailer } from './mail.ts';
 import { createPgRateLimiter, limiterKey, type RateLimiter } from './ratelimit.ts';
+import { realmOf } from './realm.ts';
 import { DEFAULT_REAUTH_WINDOW_MS, type EnrolmentProof, requireRecentAuth } from './reauth.ts';
 import { finishLogin } from './session-login.ts';
 import { revokeAllSessions, rotateSession } from './sessions.ts';
@@ -175,6 +176,7 @@ export function createMfa(opts: MfaOptions): Mfa {
   const key = parseKey(totp.key, 'totp.key');
   keyring.set(totp.keyVersion, key);
   const reauthWindowMs = config.reauthWindowMs ?? DEFAULT_REAUTH_WINDOW_MS;
+  const realm = realmOf(config);
 
   const seal = (secretBase32: string): { cipher: Buffer; iv: Buffer; tag: Buffer } => {
     const iv = randomBytes(12);
@@ -217,7 +219,7 @@ export function createMfa(opts: MfaOptions): Mfa {
   const revokeOthersAndRotate = async (userId: UserId, keep: string | undefined, now: Date, meta: SessionMeta) => {
     await revokeAllSessions(db, userId, keep, meta, now);
     if (!keep) return undefined;
-    return (await rotateSession(db, keep, now, { authenticatedAt: now })) ?? undefined;
+    return (await rotateSession(db, keep, now, { authenticatedAt: now, realm })) ?? undefined;
   };
 
   const totpFor = (secretBase32: string, label: string) =>
@@ -276,8 +278,9 @@ export function createMfa(opts: MfaOptions): Mfa {
     const tokenHash = sha256(token);
     return db.transaction(async (tx) => {
       const rows = await tx.query<{ user_id: string; attempts: number; expires_at: Date }>(
-        'SELECT user_id, attempts, expires_at FROM identity.pending_logins WHERE token_hash = $1',
-        [tokenHash],
+        `SELECT user_id, attempts, expires_at FROM identity.pending_logins
+          WHERE token_hash = $1 AND user_id IN (SELECT id FROM identity.users WHERE realm = $2)`,
+        [tokenHash, realm],
       );
       const row = rows[0];
       if (!row || row.expires_at <= now) return { kind: 'invalid' };
@@ -347,7 +350,7 @@ export function createMfa(opts: MfaOptions): Mfa {
      * the user does not hold and bricks the account at the next login.
      */
     async beginTotpEnrolment(userId, proof, now = clock()) {
-      await requireRecentAuth(db, credentials, userId, proof, now, reauthWindowMs);
+      await requireRecentAuth(db, credentials, userId, proof, now, reauthWindowMs, realm);
       const email = await userEmail(userId);
       if (!email) throw new IdentityError({ code: 'not_found', what: `user ${userId}` });
       const secret = randomBase32(20);

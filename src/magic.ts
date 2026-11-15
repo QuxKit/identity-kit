@@ -19,6 +19,7 @@ import { IdentityError } from './errors.ts';
 import { recordEvent } from './events.ts';
 import { createMailer, type Mailer } from './mail.ts';
 import { createPgRateLimiter, limiterKey, type RateLimiter } from './ratelimit.ts';
+import { realmOf, realmSubject } from './realm.ts';
 import { finishLogin } from './session-login.ts';
 import { expiresIn, issueToken, sha256 } from './tokens.ts';
 import type {
@@ -74,6 +75,7 @@ export function createMagic(opts: MagicOptions): Magic {
   // Constructed for parity with the other modules (a host passes the same
   // config everywhere); it also validates the pepper keyring up front.
   createCredentials(config);
+  const realm = realmOf(config);
   const rateLimiter = opts.rateLimiter === undefined ? createPgRateLimiter({ db, clock }) : opts.rateLimiter;
   const limit = async (key: string): Promise<void> => {
     if (!rateLimiter) return;
@@ -84,10 +86,10 @@ export function createMagic(opts: MagicOptions): Magic {
   return {
     async request(input, now = clock()) {
       const email = normaliseEmail(input.email);
-      await limit(limiterKey('magic_link', email, input.ipAddress));
+      await limit(limiterKey('magic_link', realmSubject(realm, email), input.ipAddress));
       const rows = await db.query<{ id: string; deletion_requested_at: Date | null; email_verified_at: Date | null }>(
-        'SELECT id, deletion_requested_at, email_verified_at FROM identity.users WHERE email = $1',
-        [email],
+        'SELECT id, deletion_requested_at, email_verified_at FROM identity.users WHERE realm = $1 AND email = $2',
+        [realm, email],
       );
       const user = rows[0];
       // An unverified or deletion-pending account gets the unknown-address mail:
@@ -115,8 +117,9 @@ export function createMagic(opts: MagicOptions): Magic {
       const outcome = await db.transaction<{ kind: 'invalid' } | { kind: 'ok'; userId: UserId; email: string }>(
         async (tx) => {
           const rows = await tx.query<{ user_id: string; expires_at: Date }>(
-            'SELECT user_id, expires_at FROM identity.magic_link_tokens WHERE token_hash = $1',
-            [tokenHash],
+            `SELECT user_id, expires_at FROM identity.magic_link_tokens
+              WHERE token_hash = $1 AND user_id IN (SELECT id FROM identity.users WHERE realm = $2)`,
+            [tokenHash, realm],
           );
           const row = rows[0];
           if (!row) return { kind: 'invalid' };

@@ -8,6 +8,17 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Realms** (`sql/010_realms.sql`, required): separate namespaces of accounts
+  in one schema. `IdentityConfig.realm` names an instance's realm and
+  `identity.inRealm(name, { appUrl })` binds another. One address can hold one
+  account per realm; every lookup by address and every presented token (session,
+  reset, verification, deletion cancel, magic link, pending MFA login, passkey
+  assertion) is narrowed to the realm, so a credential from another realm is not
+  found and is not burned. Rate-limit keys and social links (`oauth_identities`,
+  now keyed `(realm, provider, subject)`) are per realm. `OidcOptions.realm`
+  passes it to `createOidc`. The default realm is `''`; every existing account is
+  in it and nothing changes for a host that never names one. API keys stay
+  realm-free (their owner is opaque).
 - **Rolling API keys** (`sql/011_apikey_roll.sql`, opt-in with `003`):
   `rollApiKey(id, { overlapMs })` mints a replacement with the same owner, name,
   scopes and environment, shown once, while the old key keeps resolving for the

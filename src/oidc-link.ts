@@ -22,7 +22,12 @@
 //
 // A provider that returns no email cannot create a user in this schema (email is
 // NOT NULL, UNIQUE), so that is its own outcome rather than a swallowed error.
+//
+// All four rules run inside one realm (src/realm.ts): a link, an address match
+// and a new account are all in `options.realm`, so the same Google account can
+// be linked once at each of two schools and neither link reaches the other.
 
+import { realmOf } from './realm.ts';
 import { registrationPolicy } from './registration.ts';
 import type { RegistrationSetting, SqlExecutor } from './types.ts';
 
@@ -63,6 +68,9 @@ export interface LinkOptions {
    * registration through the social door.
    */
   registration?: RegistrationSetting;
+  /** The realm to link and create in (sql/010_realms.sql). Omitted means the
+   *  default realm, `''`. The instance passes its own. */
+  realm?: string;
 }
 
 const normalise = (email: string) => email.trim().toLowerCase();
@@ -73,10 +81,14 @@ export async function linkOrCreate(
   now: Date,
   options: LinkOptions = {},
 ): Promise<LinkResult> {
+  const realm = realmOf(options);
   // 1. Already linked — the only path that needs no email reasoning at all.
+  // The user's own realm is checked too, not only the link's, so a link row
+  // can never carry anyone across.
   const linked = await db.query<{ user_id: string }>(
-    'SELECT user_id FROM identity.oauth_identities WHERE provider = $1 AND subject = $2',
-    [claims.provider, claims.subject],
+    `SELECT o.user_id FROM identity.oauth_identities o JOIN identity.users u ON u.id = o.user_id
+      WHERE o.realm = $1 AND o.provider = $2 AND o.subject = $3 AND u.realm = $1`,
+    [realm, claims.provider, claims.subject],
   );
   if (linked[0]) return { kind: 'ok', userId: linked[0].user_id, isNewUser: false };
 
@@ -84,8 +96,8 @@ export async function linkOrCreate(
   const email = normalise(claims.email);
 
   const local = await db.query<{ id: string; email_verified_at: Date | null }>(
-    'SELECT id, email_verified_at FROM identity.users WHERE email = $1',
-    [email],
+    'SELECT id, email_verified_at FROM identity.users WHERE realm = $1 AND email = $2',
+    [realm, email],
   );
   const existing = local[0];
 
@@ -93,8 +105,8 @@ export async function linkOrCreate(
     // 2. Link only when BOTH sides verified the address. Never otherwise.
     if (claims.emailVerified && existing.email_verified_at) {
       await db.query(
-        'INSERT INTO identity.oauth_identities (provider, subject, user_id, email) VALUES ($1, $2, $3, $4)',
-        [claims.provider, claims.subject, existing.id, email],
+        'INSERT INTO identity.oauth_identities (realm, provider, subject, user_id, email) VALUES ($1, $2, $3, $4, $5)',
+        [realm, claims.provider, claims.subject, existing.id, email],
       );
       return { kind: 'ok', userId: existing.id, isNewUser: false };
     }
@@ -111,15 +123,15 @@ export async function linkOrCreate(
   // No password; email verified only if the provider verified it.
   const created = await db.transaction(async (tx) => {
     const rows = await tx.query<{ id: string }>(
-      `INSERT INTO identity.users (email, email_display, email_verified_at, password_hash)
-       VALUES ($1, $2, $3, NULL) RETURNING id`,
-      [email, claims.email, claims.emailVerified ? now : null],
+      `INSERT INTO identity.users (email, email_display, email_verified_at, password_hash, realm)
+       VALUES ($1, $2, $3, NULL, $4) RETURNING id`,
+      [email, claims.email, claims.emailVerified ? now : null, realm],
     );
     // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING yields exactly one row
     const userId = rows[0]!.id;
     await tx.query(
-      'INSERT INTO identity.oauth_identities (provider, subject, user_id, email) VALUES ($1, $2, $3, $4)',
-      [claims.provider, claims.subject, userId, email],
+      'INSERT INTO identity.oauth_identities (realm, provider, subject, user_id, email) VALUES ($1, $2, $3, $4, $5)',
+      [realm, claims.provider, claims.subject, userId, email],
     );
     return userId;
   });
