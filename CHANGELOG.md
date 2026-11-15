@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Rolling API keys** (`sql/011_apikey_roll.sql`, opt-in with `003`):
+  `rollApiKey(id, { overlapMs })` mints a replacement with the same owner, name,
+  scopes and environment, shown once, while the old key keeps resolving for the
+  overlap (default 24 hours, 0 to 30 days, never past an expiry it already had).
+  One replacement per key (unique index; the row is locked for the roll). A
+  revoked, expired or already-rolled key is refused with the new
+  `invalid_state` error (409 over HTTP). `revokeApiKey` works at any time and
+  ends an overlap at once. `revokeAllApiKeys(ownerId)`, `getApiKey(id)` and
+  `findApiKey(presented)` (any state, never marks the key used) for operators. `ApiKeySummary` gains `ownerId`, `environment`, `rolledFrom`,
+  `replacedBy`, `rolledAt` and `state`; `ROLL_OVERLAPS` for dashboards. Routes:
+  `POST /apikeys/:id/roll`; the router now matches `:id` in any segment. Event:
+  `api_key_rolled`.
+
 - `IdentityConfig.registration` closes account creation — `'open'` (the default,
   so nothing changes for an existing host), `'closed'`, or a function asked per
   attempt. Honoured on BOTH doors into `identity.users`: `signup`, and the
@@ -29,6 +42,15 @@ All notable changes to this project are documented here. The format follows
 - `registration_closed` failure code (HTTP 403), the `LinkResult` variant
   `{ kind: 'registration_closed' }`, and the `registrationPolicy` /
   `assertRegistrationAllowed` helpers.
+
+### Fixed
+
+- **API keys stay within their prefix.** Instances with different prefixes can
+  share `identity.api_keys`, and one owner can hold keys of several kinds (a
+  workspace's chat keys and its registry tokens). `listApiKeys`, `getApiKey`,
+  `revokeApiKey`, `rollApiKey` and `revokeAllApiKeys` now only see keys of the
+  instance's own prefix: before, a list showed every kind the owner held and a
+  revoke through one instance could revoke another kind's key.
 
 ### Note for hosts calling `linkOrCreate` directly
 

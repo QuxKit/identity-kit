@@ -166,6 +166,8 @@ const STATUS: Partial<Record<IdentityErrorCode, number>> = {
   bad_credentials: 403,
   no_password: 400,
   not_found: 404,
+  // Rolling a revoked, expired or already-rolled key: the key is real, its state refuses.
+  invalid_state: 409,
   rate_limited: 429,
   reauth_required: 401,
   enrolment_not_started: 409,
@@ -444,6 +446,17 @@ export function routes(opts: RoutesOptions): Routes {
       await keys.revokeApiKey(id, now, metaOf(req));
       return json(204, null);
     });
+    // Replace a key; the old one keeps working for `overlapMs` (default 24 h).
+    on('POST', '/apikeys/:id/roll', async (req, b, now) => {
+      const a = await authed(req, now);
+      if (!a) return unauthorised();
+      const id = req.path.slice('/apikeys/'.length, -'/roll'.length);
+      const owned = (await keys.listApiKeys(a.session.userId)).some((k) => k.id === id);
+      if (!owned) return json(404, { error: 'not_found', what: `api key ${id}` });
+      const overlapMs = typeof b?.overlapMs === 'number' ? b.overlapMs : undefined;
+      const rolled = await keys.rollApiKey(id, { overlapMs, createdBy: a.session.userId, meta: metaOf(req) }, now);
+      return json(201, rolled);
+    });
   }
 
   // --- magic links ---
@@ -515,22 +528,25 @@ export function routes(opts: RoutesOptions): Routes {
 
   const paths = [...new Set([...table.keys()].map((k) => k.slice(k.indexOf(' ') + 1)))].map((p) => `${base}${p}`);
 
+  const fits = (pattern: string, path: string): boolean => {
+    const want = pattern.split('/');
+    const got = path.split('/');
+    return want.length === got.length && want.every((s, i) => (s === ':id' ? (got[i] ?? '') !== '' : s === got[i]));
+  };
+
   const match = (method: string, path: string): { route: Route } | 'method' | null => {
     const key = `${method} ${path}`;
     const direct = table.get(key);
     if (direct) return { route: direct };
-    // parameterised: /apikeys/:id, /passkeys/:id
+    // parameterised: /apikeys/:id, /apikeys/:id/roll, /passkeys/:id. `:id` is
+    // one non-empty segment; every other segment must match as written.
     for (const [k, route] of table) {
       const [m, p] = k.split(' ', 2) as [string, string];
-      if (!p.endsWith('/:id')) continue;
-      const prefix = p.slice(0, -3);
-      if (path.startsWith(prefix) && path.length > prefix.length && !path.slice(prefix.length).includes('/')) {
-        if (m === method) return { route };
-      }
+      if (m === method && p.includes('/:id') && fits(p, path)) return { route };
     }
     const known = [...table.keys()].some((k) => {
       const p = k.slice(k.indexOf(' ') + 1);
-      return p === path || (p.endsWith('/:id') && path.startsWith(p.slice(0, -3)));
+      return p === path || fits(p, path) || (p.endsWith('/:id') && path.startsWith(p.slice(0, -3)));
     });
     return known ? 'method' : null;
   };

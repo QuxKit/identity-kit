@@ -202,6 +202,22 @@ describe('security events', { skip: harness === null ? SKIP_REASON : false }, ()
     assert.equal(evs[0]?.ip, '203.0.113.7');
   });
 
+  it('records api_key_rolled, and the replacement as issued, keyed by the owner', async () => {
+    const keys = createApiKeys({ db: h.db, prefix: 'evr' });
+    const owner = 'org_roll_events';
+    const { id: oldId } = await keys.createApiKey(owner, { name: 'deploy' });
+    const rolled = await keys.rollApiKey(oldId, { overlapMs: 0, createdBy: 'u_ops', meta });
+    const evs = await listEvents(h.db, owner);
+    assert.deepEqual(
+      evs.map((e) => e.kind),
+      ['api_key_issued', 'api_key_rolled', 'api_key_issued'],
+    );
+    assert.deepEqual([evs[0]?.metadata.apiKeyId, evs[0]?.metadata.rolledFrom], [rolled.id, oldId]);
+    assert.deepEqual([evs[1]?.metadata.apiKeyId, evs[1]?.metadata.replacementId], [oldId, rolled.id]);
+    assert.equal(evs[1]?.metadata.createdBy, 'u_ops');
+    assert.equal(evs[1]?.ip, '203.0.113.7');
+  });
+
   it('equal timestamps break on the numeric id, not its text form (9 < 10 < 12)', async () => {
     const userId = 'tie-subject';
     const at = new Date('2026-02-02T00:00:00Z');

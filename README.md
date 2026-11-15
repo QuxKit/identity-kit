@@ -504,6 +504,27 @@ nothing to compare in constant time); a product-specific prefix + checksum lets
 secret scanners revoke a leaked key before a customer notices. Roles/permissions
 are the host's — identity-kit only authenticates. Apply `sql/003_apikeys.sql`.
 
+**Rolling** replaces a key without an outage (`sql/011_apikey_roll.sql`):
+
+```ts
+const next = await keys.rollApiKey(id, { overlapMs: 24 * 3_600_000 }); // shown once
+// next.key: same name, scopes, environment; the old key resolves until next.oldExpiresAt
+await keys.revokeApiKey(id);            // any time, on any key — ends an overlap at once
+await keys.revokeAllApiKeys(ownerId);   // the operator's stop button
+await keys.getApiKey(id);               // any key by id, for an operator (ownerId included)
+await keys.findApiKey(leakedKey);       // the key a pasted secret names, in any state; never marks it used
+```
+
+`ROLL_OVERLAPS` lists the choices a dashboard offers (immediately, 1 hour, 24
+hours, 7 days); any overlap up to 30 days is accepted, and it never extends an
+expiry the key already had. A key that expired keeps its lifetime when rolled.
+A revoked, expired or already-rolled key refuses to roll (`invalid_state`, 409
+over HTTP); roll its replacement instead. Summaries carry `state` (`active`,
+`rolling`, `expired`, `revoked`), `rolledFrom` and `replacedBy`. The mounted
+routes add `POST /apikeys/:id/roll` (body `{ overlapMs }`). Events:
+`api_key_rolled` for the old key and `api_key_issued` (with `rolledFrom`) for
+the new one.
+
 ### `identity-kit/oidc` — Sign in with Google / Apple
 
 ```ts
@@ -562,11 +583,12 @@ the `rate_limits` table (required by the core); `007_passkeys.sql` adds
 adds `magic_link_tokens`; `006_events.sql` adds the
 security-events log (required by the core; keyed by a text `user_id` with no
 foreign key, because API-key events are keyed by an opaque owner — purge deletes
-them explicitly). Everything else cascades on delete; every file is re-runnable,
+them explicitly); `011_apikey_roll.sql` adds `rolled_from`, `replaced_by` and
+`rolled_at` to `api_keys` (opt-in, with `003`). Everything else cascades on delete; every file is re-runnable,
 applied in order:
 
 ```sh
-for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening 006_events 007_passkeys 008_magic; do
+for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening 006_events 007_passkeys 008_magic 011_apikey_roll; do
   psql -v ON_ERROR_STOP=1 -f "node_modules/@quxkit/identity-kit/sql/$f.sql"
 done
 ```
