@@ -43,6 +43,15 @@ All notable changes to this project are documented here. The format follows
   `{ kind: 'registration_closed' }`, and the `registrationPolicy` /
   `assertRegistrationAllowed` helpers.
 
+### Fixed
+
+- **API keys stay within their prefix.** Instances with different prefixes can
+  share `identity.api_keys`, and one owner can hold keys of several kinds (a
+  workspace's chat keys and its registry tokens). `listApiKeys`, `getApiKey`,
+  `revokeApiKey`, `rollApiKey` and `revokeAllApiKeys` now only see keys of the
+  instance's own prefix: before, a list showed every kind the owner held and a
+  revoke through one instance could revoke another kind's key.
+
 ### Note for hosts calling `linkOrCreate` directly
 
 Its new fourth argument is optional, so existing calls compile unchanged — and

@@ -183,6 +183,13 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
 
   const shape = new RegExp(`^${prefix}_(live|test)_([A-Z2-7]{52})_([A-Z2-7]{7})$`);
 
+  // Several instances (one per prefix) may share identity.api_keys, and one
+  // owner can hold keys of several kinds: a workspace's chat keys and its
+  // registry tokens, say. Every call by id or by owner is narrowed to THIS
+  // prefix, so one kind's list never shows another's keys and one kind's
+  // revoke-all never revokes another's.
+  const own = `${prefix}_`;
+
   // The trailing checksum is not integrity — trivially forgeable, not asked to
   // be otherwise. It lets a secret scanner reject a typo without calling the API.
   const checksumOf = (stem: string): string => {
@@ -286,9 +293,11 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
     /** Effective on the next request. Lookups are not cached; if they ever
      *  are, the TTL is the revocation window. */
     async revokeApiKey(id, now = clock(), meta = {}) {
+      if (typeof id !== 'string' || !UUID.test(id)) return;
       const rows = await db.query<{ owner_id: string; name: string }>(
-        'UPDATE identity.api_keys SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL RETURNING owner_id, name',
-        [id, now],
+        `UPDATE identity.api_keys SET revoked_at = $2
+          WHERE id = $1 AND revoked_at IS NULL AND starts_with(display_prefix, $3) RETURNING owner_id, name`,
+        [id, now, own],
       );
       const row = rows[0];
       if (!row) return;
@@ -313,9 +322,10 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
       const rolled = await db.transaction(async (tx) => {
         // The row is locked for the whole roll, so a revoke that lands at the
         // same moment waits and then wins, and two rolls cannot both proceed.
-        const [old] = await tx.query<KeyRow>(`SELECT ${KEY_COLUMNS} FROM identity.api_keys WHERE id = $1 FOR UPDATE`, [
-          id,
-        ]);
+        const [old] = await tx.query<KeyRow>(
+          `SELECT ${KEY_COLUMNS} FROM identity.api_keys WHERE id = $1 AND starts_with(display_prefix, $2) FOR UPDATE`,
+          [id, own],
+        );
         if (!old) throw new IdentityError({ code: 'not_found', what: 'API key' });
         const refuse = (reason: string): never => {
           throw new IdentityError({ code: 'invalid_state', what: 'API key', reason });
@@ -396,8 +406,9 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
       const rows = await db.query<{ id: string; name: string }>(
         `UPDATE identity.api_keys SET revoked_at = $2
           WHERE owner_id = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > $2)
+            AND starts_with(display_prefix, $3)
           RETURNING id, name`,
-        [ownerId, now],
+        [ownerId, now, own],
       );
       for (const r of rows) {
         await recordEvent(db, {
@@ -413,14 +424,18 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
 
     async getApiKey(id, now = clock()) {
       if (typeof id !== 'string' || !UUID.test(id)) return null;
-      const [row] = await db.query<KeyRow>(`SELECT ${KEY_COLUMNS} FROM identity.api_keys WHERE id = $1`, [id]);
+      const [row] = await db.query<KeyRow>(
+        `SELECT ${KEY_COLUMNS} FROM identity.api_keys WHERE id = $1 AND starts_with(display_prefix, $2)`,
+        [id, own],
+      );
       return row ? summaryOf(row, now) : null;
     },
 
     async listApiKeys(ownerId, now = clock()) {
       const rows = await db.query<KeyRow>(
-        `SELECT ${KEY_COLUMNS} FROM identity.api_keys WHERE owner_id = $1 ORDER BY created_at DESC`,
-        [ownerId],
+        `SELECT ${KEY_COLUMNS} FROM identity.api_keys WHERE owner_id = $1 AND starts_with(display_prefix, $2)
+          ORDER BY created_at DESC`,
+        [ownerId, own],
       );
       return rows.map((r) => summaryOf(r, now));
     },

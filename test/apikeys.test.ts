@@ -176,6 +176,26 @@ describe('identity-kit/apikeys — rolling and revoking at any time', {
     assert.equal((await keys.getApiKey(rolled.id))?.expiresAt?.getTime(), t0.getTime() + span);
   });
 
+  it('keeps each prefix to its own keys when several share the table and an owner', async () => {
+    const chat = createApiKeys({ db: h.db, prefix: 'idrc' });
+    const reg = createApiKeys({ db: h.db, prefix: 'idrr' });
+    const c = await chat.createApiKey('ws_shared', { name: 'chat' });
+    const r = await reg.createApiKey('ws_shared', { name: 'registry' });
+    assert.deepEqual(
+      (await chat.listApiKeys('ws_shared')).map((k) => k.id),
+      [c.id],
+      'one kind’s list never shows another’s',
+    );
+    assert.equal(await chat.getApiKey(r.id), null);
+    await chat.revokeApiKey(r.id);
+    assert.ok(await reg.resolveApiKey(r.key), 'a revoke through the wrong kind does nothing');
+    await assert.rejects(chat.rollApiKey(r.id), (e: unknown) => IdentityError.hasCode(e, 'not_found'));
+    assert.equal(await chat.revokeAllApiKeys('ws_shared'), 1, 'revoke-all stays within its kind');
+    assert.equal(await chat.resolveApiKey(c.key), null);
+    assert.ok(await reg.resolveApiKey(r.key), 'the registry token is untouched');
+    await keys.revokeApiKey('not-a-uuid');
+  });
+
   it('an operator revokes every live key an owner holds, and finds any key by id', async () => {
     const a = await keys.createApiKey('org_stop', { name: 'a' });
     const b = await keys.createApiKey('org_stop', { name: 'b' });
