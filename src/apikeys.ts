@@ -140,6 +140,12 @@ export interface ApiKeys {
   revokeAllApiKeys(ownerId: string, now?: Date, meta?: SessionMeta): Promise<number>;
   /** One key by id, whoever owns it, for an operator. Null when there is none. */
   getApiKey(id: string, now?: Date): Promise<ApiKeySummary | null>;
+  /**
+   * The key a presented secret names, in any state, for an operator handed a
+   * leaked key. Unlike resolveApiKey it never marks the key used, and it finds
+   * a revoked or expired key too, so "is this one dead?" has an answer.
+   */
+  findApiKey(presented: string, now?: Date): Promise<ApiKeySummary | null>;
   listApiKeys(ownerId: string, now?: Date): Promise<ApiKeySummary[]>;
 }
 
@@ -428,6 +434,14 @@ export function createApiKeys(opts: ApiKeysOptions): ApiKeys {
         `SELECT ${KEY_COLUMNS} FROM identity.api_keys WHERE id = $1 AND starts_with(display_prefix, $2)`,
         [id, own],
       );
+      return row ? summaryOf(row, now) : null;
+    },
+
+    async findApiKey(presented, now = clock()) {
+      if (!looksLikeKey(presented)) return null;
+      const [row] = await db.query<KeyRow>(`SELECT ${KEY_COLUMNS} FROM identity.api_keys WHERE key_hash = $1`, [
+        sha256(presented),
+      ]);
       return row ? summaryOf(row, now) : null;
     },
 

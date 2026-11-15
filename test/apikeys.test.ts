@@ -196,6 +196,17 @@ describe('identity-kit/apikeys — rolling and revoking at any time', {
     await keys.revokeApiKey('not-a-uuid');
   });
 
+  it('finds the key a leaked secret names, in any state, without marking it used', async () => {
+    const k = await keys.createApiKey('org_find', { name: 'leaked' });
+    const found = await keys.findApiKey(k.key, t0);
+    assert.deepEqual([found?.id, found?.ownerId, found?.state, found?.lastUsedAt], [k.id, 'org_find', 'active', null]);
+    await keys.revokeApiKey(k.id, t0);
+    assert.equal((await keys.findApiKey(k.key, t0))?.state, 'revoked', 'a dead key is still found, and says so');
+    assert.equal(await keys.findApiKey('idr_live_nope'), null);
+    const other = createApiKeys({ db: h.db, prefix: 'idrz' });
+    assert.equal(await other.findApiKey(k.key), null, 'another prefix does not recognise it');
+  });
+
   it('an operator revokes every live key an owner holds, and finds any key by id', async () => {
     const a = await keys.createApiKey('org_stop', { name: 'a' });
     const b = await keys.createApiKey('org_stop', { name: 'b' });

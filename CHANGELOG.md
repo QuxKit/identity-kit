@@ -15,8 +15,8 @@ All notable changes to this project are documented here. The format follows
   One replacement per key (unique index; the row is locked for the roll). A
   revoked, expired or already-rolled key is refused with the new
   `invalid_state` error (409 over HTTP). `revokeApiKey` works at any time and
-  ends an overlap at once. `revokeAllApiKeys(ownerId)` and `getApiKey(id)` for
-  operators. `ApiKeySummary` gains `ownerId`, `environment`, `rolledFrom`,
+  ends an overlap at once. `revokeAllApiKeys(ownerId)`, `getApiKey(id)` and
+  `findApiKey(presented)` (any state, never marks the key used) for operators. `ApiKeySummary` gains `ownerId`, `environment`, `rolledFrom`,
   `replacedBy`, `rolledAt` and `state`; `ROLL_OVERLAPS` for dashboards. Routes:
   `POST /apikeys/:id/roll`; the router now matches `:id` in any segment. Event:
   `api_key_rolled`.

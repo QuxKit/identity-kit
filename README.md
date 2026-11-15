@@ -512,6 +512,7 @@ const next = await keys.rollApiKey(id, { overlapMs: 24 * 3_600_000 }); // shown 
 await keys.revokeApiKey(id);            // any time, on any key — ends an overlap at once
 await keys.revokeAllApiKeys(ownerId);   // the operator's stop button
 await keys.getApiKey(id);               // any key by id, for an operator (ownerId included)
+await keys.findApiKey(leakedKey);       // the key a pasted secret names, in any state; never marks it used
 ```
 
 `ROLL_OVERLAPS` lists the choices a dashboard offers (immediately, 1 hour, 24
