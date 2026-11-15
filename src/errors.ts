@@ -19,6 +19,9 @@ export type IdentityFailure =
    *  password so the operational cause is legible. */
   | { code: 'pepper_version'; stored: number; current: number }
   | { code: 'not_found'; what: string }
+  /** The record exists but cannot do this now: rolling a revoked, expired or
+   *  already-rolled API key. The reason says which, for the person who asked. */
+  | { code: 'invalid_state'; what: string; reason: string }
   /** The rate limiter refused this hit. `retryAfterMs` is when a retry could
    *  succeed; `key` is the limiter key (never log it raw — it can carry an email). */
   | { code: 'rate_limited'; retryAfterMs: number; key: string }
@@ -85,6 +88,8 @@ function describe(failure: IdentityFailure): string {
       );
     case 'not_found':
       return `no ${failure.what}`;
+    case 'invalid_state':
+      return failure.reason;
     case 'rate_limited':
       return `rate limited; retry in ${failure.retryAfterMs} ms`;
     case 'reauth_required':
