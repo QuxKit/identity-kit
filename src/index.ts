@@ -38,6 +38,7 @@ export type {
   RateLimitRules,
 } from './ratelimit.ts';
 export { createMemoryRateLimiter, createPgRateLimiter, DEFAULT_RATE_LIMITS, limiterKey } from './ratelimit.ts';
+export { DEFAULT_REALM, realmOf, realmSubject } from './realm.ts';
 export { assertRegistrationAllowed, registrationPolicy } from './registration.ts';
 export type { LoginMethod } from './session-login.ts';
 export { finishLogin } from './session-login.ts';

@@ -8,6 +8,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Realms** (`sql/010_realms.sql`, required): separate namespaces of accounts
+  in one schema. `IdentityConfig.realm` names an instance's realm and
+  `identity.inRealm(name, { appUrl })` binds another. One address can hold one
+  account per realm; every lookup by address and every presented token (session,
+  reset, verification, deletion cancel, magic link, pending MFA login, passkey
+  assertion) is narrowed to the realm, so a credential from another realm is not
+  found and is not burned. Rate-limit keys and social links (`oauth_identities`,
+  now keyed `(realm, provider, subject)`) are per realm. `OidcOptions.realm`
+  passes it to `createOidc`. The default realm is `''`; every existing account is
+  in it and nothing changes for a host that never names one. API keys stay
+  realm-free (their owner is opaque).
+
 - `IdentityConfig.registration` closes account creation — `'open'` (the default,
   so nothing changes for an existing host), `'closed'`, or a function asked per
   attempt. Honoured on BOTH doors into `identity.users`: `signup`, and the

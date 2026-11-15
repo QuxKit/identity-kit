@@ -11,6 +11,7 @@
 // that stops running must not silently extend everyone's session.
 
 import { DEFAULT_EVENT_RETENTION_MS, recordEvent, sweepEvents } from './events.ts';
+import { realmOf } from './realm.ts';
 import { issueToken, sha256 } from './tokens.ts';
 import type { IdentityConfig, ResolvedSession, SessionMeta, SessionSummary, SqlExecutor, UserId } from './types.ts';
 
@@ -30,6 +31,9 @@ export interface ResolveOptions {
   /** Rotate the identifier when this read renews the idle window. The caller
    *  must then set `rotated.token` as the cookie. */
   rotateOnRenewal?: boolean;
+  /** Only a session whose user is in this realm resolves (sql/010_realms.sql).
+   *  Omitted means the default realm, `''`. */
+  realm?: string;
 }
 
 export async function createSession(
@@ -67,8 +71,9 @@ export async function rotateSession(
   db: SqlExecutor,
   tokenHash: string,
   now: Date,
-  opts: { authenticatedAt?: Date } = {},
+  opts: { authenticatedAt?: Date; realm?: string } = {},
 ): Promise<{ token: string; tokenHash: string; expiresAt: Date } | null> {
+  const realm = realmOf(opts);
   const { plaintext, hash } = issueToken();
   return db.transaction(async (tx) => {
     const rows = await tx.query<{ expires_at: Date }>(
@@ -79,8 +84,9 @@ export async function rotateSession(
               created_at, $3, COALESCE($4, authenticated_at)
          FROM identity.sessions
         WHERE token_hash = $1 AND expires_at > $3 AND absolute_expires_at > $3
+          AND user_id IN (SELECT id FROM identity.users WHERE realm = $5)
        RETURNING expires_at`,
-      [tokenHash, hash, now, opts.authenticatedAt ?? null],
+      [tokenHash, hash, now, opts.authenticatedAt ?? null, realm],
     );
     const inserted = rows[0];
     if (!inserted) return null;
@@ -101,10 +107,14 @@ export async function resolveSession(
   opts: ResolveOptions = {},
 ): Promise<ResolvedSession | null> {
   const tokenHash = sha256(token);
+  const realm = realmOf(opts);
+  // A session from another realm is not found — and not deleted either, so
+  // presenting one somewhere it does not belong cannot sign its owner out.
   const rows = await db.query<SessionRow>(
     `SELECT token_hash, user_id, expires_at, absolute_expires_at, authenticated_at
-       FROM identity.sessions WHERE token_hash = $1`,
-    [tokenHash],
+       FROM identity.sessions
+      WHERE token_hash = $1 AND user_id IN (SELECT id FROM identity.users WHERE realm = $2)`,
+    [tokenHash, realm],
   );
   const row = rows[0];
   if (!row) return null;
@@ -134,7 +144,7 @@ export async function resolveSession(
       // The renewal is the write we already pay for; rotating here bounds how
       // long a token that leaked early stays good, at no extra write on the
       // read-mostly path.
-      const rotated = await rotateSession(db, tokenHash, now);
+      const rotated = await rotateSession(db, tokenHash, now, { realm });
       if (rotated) {
         resolved.tokenHash = rotated.tokenHash;
         resolved.rotated = { token: rotated.token, expiresAt: rotated.expiresAt };

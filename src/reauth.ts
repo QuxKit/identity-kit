@@ -9,6 +9,7 @@
 
 import type { Credentials } from './credentials.ts';
 import { IdentityError } from './errors.ts';
+import { DEFAULT_REALM } from './realm.ts';
 import { resolveSession } from './sessions.ts';
 import type { SqlExecutor, UserId } from './types.ts';
 
@@ -31,11 +32,12 @@ export async function requireRecentAuth(
   proof: EnrolmentProof,
   now: Date,
   reauthWindowMs: number = DEFAULT_REAUTH_WINDOW_MS,
+  realm: string = DEFAULT_REALM,
 ): Promise<void> {
   if ('password' in proof) {
     const rows = await db.query<{ password_hash: string | null; pepper_version: number }>(
-      'SELECT password_hash, pepper_version FROM identity.users WHERE id = $1',
-      [userId],
+      'SELECT password_hash, pepper_version FROM identity.users WHERE id = $1 AND realm = $2',
+      [userId, realm],
     );
     const user = rows[0];
     const ok = user?.password_hash
@@ -44,7 +46,7 @@ export async function requireRecentAuth(
     if (!ok) throw new IdentityError({ code: 'reauth_required' });
     return;
   }
-  const session = await resolveSession(db, proof.sessionToken, now);
+  const session = await resolveSession(db, proof.sessionToken, now, { realm });
   if (!session || session.userId !== userId) throw new IdentityError({ code: 'reauth_required' });
   if (now.getTime() - session.authenticatedAt.getTime() > reauthWindowMs) {
     throw new IdentityError({ code: 'reauth_required' });

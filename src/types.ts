@@ -102,6 +102,17 @@ export interface IdentityConfig {
    * row a superadmin can change without a deploy.
    */
   registration?: RegistrationSetting;
+  /**
+   * The realm this instance's accounts live in (sql/010_realms.sql). One address
+   * can hold a separate account in each realm, and nothing that authenticates in
+   * one realm — a session, a reset link, an API key, a passkey — is accepted in
+   * another. Omitted means the default realm, `''`, which every account made
+   * before realms existed is in. `identity.inRealm(name)` is the usual way to get
+   * an instance for another realm.
+   *
+   * Lower-case letters, digits, `:`, `.`, `_` and `-`, at most 80 characters.
+   */
+  realm?: string;
 }
 
 // --- registration (a seam) --------------------------------------------------

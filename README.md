@@ -105,7 +105,8 @@ if (result.kind === 'session') setCookie(identity.sessionCookie(result.token, re
 ```
 
 Apply the schema first: `psql -f node_modules/@quxkit/identity-kit/sql/001_identity.sql`,
-`sql/005_hardening.sql` and `sql/006_events.sql` (all re-runnable; see [Schema](#schema)).
+`sql/005_hardening.sql`, `sql/006_events.sql` and `sql/010_realms.sql` (all re-runnable;
+see [Schema](#schema)).
 
 `db` is any `SqlExecutor` — two methods, `query` and `transaction`. The `./pg`
 subpath ships one over a `pg.Pool` (pinned-connection transactions, savepoints
@@ -290,6 +291,41 @@ user, expiry, metadata) and kills the old one at once. With
 rotate it (they used to revoke everything). The flag defaults to off so a host
 that ignores the return values keeps working; turn it on once yours re-sets the
 cookie.
+
+## Realms
+
+A realm is a separate namespace of accounts in the same schema. One address can
+hold one account in each realm, and nothing that authenticates in one realm is
+accepted in another. A learning platform makes each school a realm, so a learner
+who signs up at two schools has two accounts, and neither school can see or sign
+in the other's.
+
+```ts
+const identity = createIdentity({ db, config, mail });          // the default realm, ''
+const school = identity.inRealm(`school:${tenantId}`, { appUrl: 'https://acme.example.school' });
+
+await school.signup({ email, password });   // an account in that realm only
+await school.login({ email, password });    // never finds the default realm's account
+await school.resolveSession(cookieToken);   // null for a session from any other realm
+```
+
+What is narrowed to the realm: every lookup by address (signup, login, reset,
+verification resend, magic link, social sign-in), and every token a caller
+presents (session, reset, verification, deletion cancel, magic link, pending MFA
+login, passkey assertion). A token from another realm is *not found* rather than
+refused, and is not burned, so presenting one in the wrong place cannot sign its
+owner out. Rate-limit keys carry the realm too. Social links are per realm, so
+the same Google account can be linked once at each school.
+
+`appUrl` is the base for that realm's mail links; give each realm the address it
+is served from, never the request's `Host`. API keys are not realm-bound: their
+owner is opaque, so the host checks whose key it is. The opt-in modules take a
+config of their own, so build them with `{ ...config, realm }`.
+
+Every account made before realms existed is in `''`, and an application that
+never names one behaves exactly as before. Apply `sql/010_realms.sql` (required
+from 0.4.0); it moves the unique key from `email` to `(realm, email)`, and
+re-running it after `004_oidc.sql` keys social links by realm.
 
 ## Mount it
 
@@ -562,11 +598,13 @@ the `rate_limits` table (required by the core); `007_passkeys.sql` adds
 adds `magic_link_tokens`; `006_events.sql` adds the
 security-events log (required by the core; keyed by a text `user_id` with no
 foreign key, because API-key events are keyed by an opaque owner — purge deletes
-them explicitly). Everything else cascades on delete; every file is re-runnable,
+them explicitly); `009_oidc_provider.sql` adds the issuer's tables; `010_realms.sql`
+adds `users.realm` and makes `(realm, email)` the unique key (required by the core;
+see [Realms](#realms)). Everything else cascades on delete; every file is re-runnable,
 applied in order:
 
 ```sh
-for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening 006_events 007_passkeys 008_magic; do
+for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening 006_events 007_passkeys 008_magic 009_oidc_provider 010_realms; do
   psql -v ON_ERROR_STOP=1 -f "node_modules/@quxkit/identity-kit/sql/$f.sql"
 done
 ```

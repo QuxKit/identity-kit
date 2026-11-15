@@ -12,6 +12,7 @@ import { createEvents, type Events } from './events.ts';
 import { createMailer } from './mail.ts';
 import { type LinkResult, linkOrCreate, type ProviderClaims } from './oidc-link.ts';
 import { createPgRateLimiter, type RateLimiter } from './ratelimit.ts';
+import { realmOf } from './realm.ts';
 import {
   clearedSessionCookie,
   cookieName,
@@ -89,10 +90,27 @@ export interface Identity extends Accounts {
   cookieName(): string;
   sessionCookie(token: string, expiresAt: Date, now?: Date): string;
   clearedSessionCookie(): string;
+  // --- realms ---
+  /** The realm this instance works in (`config.realm`, `''` by default). */
+  readonly realm: string;
+  /**
+   * The same identity, bound to another realm (sql/010_realms.sql): accounts,
+   * sessions, links and limits there, and none of this instance's. Same
+   * executor, mail transport, clock and limiter.
+   *
+   * `appUrl` is the base for that realm's mail links, when it is served from
+   * an address of its own — a school on its own domain sends reset links to
+   * that domain, never to this instance's.
+   *
+   * The opt-in modules (`identity-kit/mfa`, `/passkeys`, `/magic`) take a
+   * config of their own: give them `{ ...config, realm }` with the same name.
+   */
+  inRealm(realm: string, overrides?: { appUrl?: string }): Identity;
 }
 
 export function createIdentity(opts: IdentityOptions): Identity {
   const { db, config } = opts;
+  const realm = realmOf(config);
   const clock: Clock = opts.clock ?? (() => new Date());
   const credentials = createCredentials(config);
   const mailer = createMailer(config, opts.mail);
@@ -111,17 +129,26 @@ export function createIdentity(opts: IdentityOptions): Identity {
   return {
     ...accounts,
     resolveSession: (token, now) =>
-      resolveSession(db, token, now ?? clock(), { rotateOnRenewal: config.rotateSessions === true }),
-    rotateSession: (token, now) => rotateSession(db, sha256(token), now ?? clock()),
+      resolveSession(db, token, now ?? clock(), { rotateOnRenewal: config.rotateSessions === true, realm }),
+    rotateSession: (token, now) => rotateSession(db, sha256(token), now ?? clock(), { realm }),
     revokeSession: (tokenHash, meta) => revokeSession(db, tokenHash, meta, clock()),
     revokeAllSessions: (userId, except, meta) => revokeAllSessions(db, userId, except, meta, clock()),
     listSessions: (userId) => listSessions(db, userId),
     sweepExpiredSessions: (now) => sweepExpiredSessions(db, now ?? clock()),
     sweepExpired: (now) => sweepExpired(db, now ?? clock(), { eventRetentionMs: config.eventRetentionMs }),
     events: createEvents(db, clock, config.eventRetentionMs),
-    linkOrCreate: (claims, now) => linkOrCreate(db, claims, now ?? clock(), { registration: config.registration }),
+    linkOrCreate: (claims, now) =>
+      linkOrCreate(db, claims, now ?? clock(), { registration: config.registration, realm }),
     cookieName: () => cookieName(config),
     sessionCookie: (token, expiresAt, now) => sessionCookie(config, token, expiresAt, now ?? clock()),
     clearedSessionCookie: () => clearedSessionCookie(config),
+    realm,
+    inRealm: (name, overrides = {}) =>
+      createIdentity({
+        ...opts,
+        // The limiter is shared, not rebuilt: its keys already carry the realm.
+        rateLimiter,
+        config: { ...config, realm: name, ...(overrides.appUrl ? { appUrl: overrides.appUrl } : {}) },
+      }),
   };
 }

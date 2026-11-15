@@ -35,6 +35,7 @@ import { IdentityError } from './errors.ts';
 import { recordEvent } from './events.ts';
 import { createMailer, type Mailer } from './mail.ts';
 import { createPgRateLimiter, limiterKey, type RateLimiter } from './ratelimit.ts';
+import { realmOf } from './realm.ts';
 import { DEFAULT_REAUTH_WINDOW_MS, type EnrolmentProof, requireRecentAuth } from './reauth.ts';
 import { finishLogin } from './session-login.ts';
 import { sha256 } from './tokens.ts';
@@ -155,6 +156,7 @@ export function createPasskeys(opts: PasskeysOptions): Passkeys {
   const userVerification = opts.userVerification ?? 'preferred';
   const requireUV = userVerification !== 'discouraged';
   const reauthWindowMs = config.reauthWindowMs ?? DEFAULT_REAUTH_WINDOW_MS;
+  const realm = realmOf(config);
   const origins = Array.isArray(rp.origin) ? rp.origin : [rp.origin];
 
   const rateLimiter = opts.rateLimiter === undefined ? createPgRateLimiter({ db, clock }) : opts.rateLimiter;
@@ -233,7 +235,7 @@ export function createPasskeys(opts: PasskeysOptions): Passkeys {
 
   return {
     async registerBegin(userId, proof, now = clock()) {
-      await requireRecentAuth(db, credentials, userId, proof, now, reauthWindowMs);
+      await requireRecentAuth(db, credentials, userId, proof, now, reauthWindowMs, realm);
       const user = await userRow(userId);
       if (!user) throw new IdentityError({ code: 'not_found', what: `user ${userId}` });
       const existing = await listRows(userId);
@@ -325,8 +327,9 @@ export function createPasskeys(opts: PasskeysOptions): Passkeys {
       const rows = await db.query<PasskeyRow>(
         `SELECT id, user_id, public_key, counter::text AS counter, transports, aaguid, name, device_type, backed_up,
                 created_at, last_used_at
-           FROM identity.passkeys WHERE id = $1`,
-        [response.id],
+           FROM identity.passkeys
+          WHERE id = $1 AND user_id IN (SELECT id FROM identity.users WHERE realm = $2)`,
+        [response.id, realm],
       );
       const cred = rows[0];
       // Unknown credential: still spend the challenge (if any), and say nothing
