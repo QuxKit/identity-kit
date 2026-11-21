@@ -13,6 +13,7 @@ import { deleteEventsFor, recordEvent } from './events.ts';
 import type { Mailer } from './mail.ts';
 import { limiterKey, type RateLimiter } from './ratelimit.ts';
 import { realmOf, realmSubject } from './realm.ts';
+import { revokeUserRefreshFamilies } from './refresh-families.ts';
 import { assertRegistrationAllowed } from './registration.ts';
 import { finishLogin } from './session-login.ts';
 import { revokeAllSessions, rotateSession } from './sessions.ts';
@@ -250,6 +251,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
           );
           // An email change is a change to how the account authenticates.
           await tx.query('DELETE FROM identity.sessions WHERE user_id = $1', [row.user_id]);
+          await revokeUserRefreshFamilies(tx, row.user_id, 'email_changed', now);
         } else {
           await tx.query('UPDATE identity.users SET email_verified_at = $2 WHERE id = $1', [row.user_id, now]);
         }
@@ -401,6 +403,8 @@ export function createAccounts(deps: AccountsDeps): Accounts {
           [row.user_id, passwordHash, config.pepperVersion, now],
         );
         await tx.query('DELETE FROM identity.sessions WHERE user_id = $1', [row.user_id]);
+        // A phone app's refresh token is a session by another name.
+        await revokeUserRefreshFamilies(tx, row.user_id, 'password_reset', now, meta);
         // In the transaction: the event and the new password commit together.
         await recordEvent(tx, { userId: row.user_id, kind: 'password_reset', meta, at: now });
         // biome-ignore lint/style/noNonNullAssertion: UPDATE … RETURNING on the row the token named
@@ -440,7 +444,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
         config.pepperVersion,
       ]);
       await recordEvent(db, { userId, kind: 'password_changed', meta, at: now });
-      await revokeAllSessions(db, userId, keepSessionHash);
+      await revokeAllSessions(db, userId, keepSessionHash, undefined, undefined, 'password_changed');
       const result: PasswordChanged = {};
       if (keepSessionHash && config.rotateSessions) {
         const rotated = await rotateSession(db, keepSessionHash, now, { authenticatedAt: now, realm });
@@ -468,7 +472,7 @@ export function createAccounts(deps: AccountsDeps): Accounts {
       );
       const user = rows[0];
       if (!user) throw new IdentityError({ code: 'not_found', what: `user ${userId}` });
-      await revokeAllSessions(db, userId);
+      await revokeAllSessions(db, userId, undefined, undefined, undefined, 'account');
       const token = await issueVerification(db, userId, 'cancel_deletion', new Date(now.getTime() + DELETION_GRACE_MS));
       await mailer.deletionRequested(user.email, token);
     },

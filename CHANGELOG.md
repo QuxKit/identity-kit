@@ -8,6 +8,33 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Refresh tokens for the issuer's phone and desktop apps**
+  (`sql/012_oidc_refresh.sql`, **required with `009`** by `identity-kit/provider`).
+  Opt-in twice: `createOidcIssuer({ refreshTokens: true | { absoluteTtlMs,
+  idleTtlMs, reuseGraceMs } })` and `registerClient({ allowRefresh: true })`,
+  first-party clients only. A refresh token is issued at the code exchange when
+  the authorization asked for `offline_access`; `token({ grantType:
+  'refresh_token', refreshToken })` (or `issuer.refresh()`) rotates it. Every
+  refresh retires the presented token; a retired token presented again revokes
+  the whole family and its access tokens (`refresh_token_reuse` event), except
+  within `reuseGraceMs` (default 10 s, `0` for strict) while the successor is
+  unused, when the same successor is returned. Idle expiry 30 days, absolute 90,
+  both configurable. Hashed at rest. A token presented under another client's id
+  is refused and left alone. `issuer.revoke()` (RFC 7009), `deviceSessions(userId)`,
+  `revokeDeviceSession(userId, id)`, `revokeDeviceSessions(userId, { exceptSessionId })`.
+  `TokenResult` gains optional `refreshToken` and `sessionId`; `UserClaims` gains
+  optional `sessionId`; `ClientRecord` gains `allowRefresh`; `Paths` gains
+  `revocation`; `sweep()` reports `refreshFamilies`. `TokenInput.code`,
+  `redirectUri` and `codeVerifier` are now optional in the type (still required
+  for the code grant) so one route can pass both grants through. Discovery
+  advertises `refresh_token`, `offline_access` and `revocation_endpoint` only on
+  an issuer created with `refreshTokens`. An issuer created without it, and any
+  client without the flag, behave exactly as before.
+- The core ends refresh families wherever it ends every session:
+  `changePassword`, `resetPassword`, an email change, `requestDeletion` and
+  `revokeAllSessions` (which takes an optional sixth `reason`). A no-op on a
+  database without the provider's tables. Events: `device_session_revoked`,
+  `refresh_token_reuse`.
 - **Realms** (`sql/010_realms.sql`, required): separate namespaces of accounts
   in one schema. `IdentityConfig.realm` names an instance's realm and
   `identity.inRealm(name, { appUrl })` binds another. One address can hold one

@@ -202,15 +202,19 @@ const { redirectTo } = await issuer.authorize({
 return Response.redirect(redirectTo, 303);
 ```
 
-Apply `sql/009_oidc_provider.sql`, serve `issuer.discovery()` at
+Apply `sql/009_oidc_provider.sql` and `sql/012_oidc_refresh.sql` (both required
+by the provider), serve `issuer.discovery()` at
 `/.well-known/openid-configuration`, `issuer.jwks()`, and routes for
-`issuer.token()` and `issuer.userinfo()`.
+`issuer.token()` and `issuer.userinfo()`. `identity-kit/http` does not mount
+these: the token endpoint is form-encoded and answers in OAuth's error shape,
+so it is a route of yours over the issuer's functions (there is one written out
+under [Phone and desktop apps](#phone-and-desktop-apps)).
 
 ### What it deliberately is not
 
 | | |
 |---|---|
-| No refresh tokens | The consuming app exchanges the code, reads the ID token and mints **its own** session. Nothing needs a credential that outlives that exchange, and a refresh token is a long-lived bearer credential to store, rotate and revoke. |
+| No refresh tokens for a web app | The consuming app exchanges the code, reads the ID token and mints **its own** session. Nothing needs a credential that outlives that exchange. A phone or desktop app has no server to keep a session on, so it can be given one, opt-in per client: see [Phone and desktop apps](#phone-and-desktop-apps). |
 | No implicit or hybrid flow | Both hand tokens to a browser through a URL. |
 | No consent screen, so no third parties | A `firstParty` client skips consent, because asking somebody to authorise you to be yourself is theatre. Any other client is **refused** rather than silently consented on a user's behalf. |
 | No dynamic registration | Clients are rows an operator writes. |
@@ -225,6 +229,153 @@ simultaneous redemptions cannot both win.
 Signing keys live in the database, not an environment variable, so `rotateKey()`
 needs no deploy. A retired key stays published in JWKS until `sweep()` drops it,
 which is after anything it signed has expired.
+
+### Phone and desktop apps
+
+A native app is a **public** client: it cannot keep a secret, so it has none,
+and PKCE stands in. It also has no server to hold a session, and a five-minute
+access token would send its owner back through the browser every five minutes.
+For those clients, and only those you name, the issuer hands out a refresh
+token. It is off until you turn it on in two places.
+
+```ts
+const issuer = createOidcIssuer({
+  db,
+  issuer: 'https://accounts.example.com',
+  refreshTokens: true,          // or { absoluteTtlMs, idleTtlMs, reuseGraceMs }
+});
+
+await issuer.registerClient({
+  clientId: 'phone',
+  name: 'The phone app',
+  redirectUris: ['https://app.example.com/oidc/callback'],   // an app link; no secret
+  firstParty: true,
+  allowRefresh: true,
+});
+```
+
+**What to register.** No `secret`. `firstParty: true` (only a first-party client
+may have `allowRefresh`, and the database refuses the row otherwise).
+A redirect URI that is `https` — a universal link on iOS, an app link on
+Android, which the operating system will only deliver to the app that proved it
+owns the domain — or `http` on loopback for a desktop app. Custom schemes
+(`myapp://`) are still refused: any app on the device can claim one.
+
+**The flow.**
+
+1. The app opens the system browser at your `/authorize` with
+   `scope=openid offline_access`, a PKCE `code_challenge` and a `state`.
+   `offline_access` is the request for a refresh token; without it the client
+   gets exactly what a web client gets.
+2. It exchanges the code at the token endpoint (`grant_type=authorization_code`,
+   `code_verifier`, no secret), optionally sending `device_label` ("Ada's
+   iPhone"). The answer carries `refresh_token` beside the five-minute
+   `access_token`.
+3. When the access token is about to expire it posts
+   `grant_type=refresh_token&refresh_token=…&client_id=phone` and gets a new
+   access token, a new ID token **and a new refresh token**. The one it sent is
+   now retired: it stores the new one and discards the old.
+4. On sign-out it posts the refresh token to the revocation endpoint.
+
+**What is true of a refresh token.**
+
+| | |
+|---|---|
+| Rotation | Every refresh retires the presented token and returns its successor. A family (one sign-in on one device) has exactly one current token; rotation is one transaction under a row lock, so two requests with the same token cannot both rotate it. |
+| Reuse detection | A retired token presented again means two parties hold the chain, and nothing can tell which is the thief. The **whole family is revoked**, its access tokens with it, and a `refresh_token_reuse` event is recorded. The person signs in again. |
+| A retry is not a theft | For `reuseGraceMs` (default 10 seconds, at most 60) after a rotation, and only while the successor has not itself been used, presenting the retired token again returns the **same** successor. That covers a response lost in a tunnel and two requests racing. `reuseGraceMs: 0` is strict: any second presentation revokes. |
+| Two clocks | Idle: 30 days without a refresh ends the sign-in (`idleTtlMs`). Absolute: 90 days from the sign-in, never extended (`absoluteTtlMs`). An access token never outlives either. |
+| Bound to its client | A token presented under another client's id is refused and **nothing else happens** — not rotated, not revoked. A client id is public, so the wrong one is a misconfigured build rather than a theft, and a thief would send the right one. |
+| Hashed at rest | sha256, like codes and access tokens. The successor kept for the retry window is encrypted under a key derived from the retired token's plaintext, which the database never holds. |
+| One refusal | Unknown, expired, revoked, retired, another client's: all `invalid_grant` with one message. |
+
+**What ends a sign-in.** `issuer.revoke()` with any refresh token of the family;
+`issuer.revokeDeviceSession(userId, id)`; reuse; and, from the core, everything
+that ends every browser session: `changePassword` (even when the browser session
+making the change is kept), `resetPassword`, an email change, `requestDeletion`
+and `identity.revokeAllSessions(userId)` ("sign out everywhere"). A refresh is
+also refused for an account with a deletion pending. The kit has no suspension
+flag of its own: if your product has one, call
+`issuer.revokeDeviceSessions(userId)` when you set it. Registering a client again
+without `allowRefresh` ends every sign-in it holds. Revoking deletes the family's
+access tokens in the same statement, so `userinfo` refuses on the next request,
+not five minutes later.
+
+**A person's devices.**
+
+```ts
+const devices = await issuer.deviceSessions(userId);
+// [{ id, clientId, clientName, label: "Ada's iPhone", scope, createdAt, lastUsedAt, expiresAt }]
+
+await issuer.revokeDeviceSession(userId, id);                       // one; false if not theirs
+await issuer.revokeDeviceSessions(userId, { exceptSessionId });     // all the others
+```
+
+The token response and `userinfo` both carry `sessionId` for a family's tokens,
+so the app can mark "this device" in the list and spare it when signing out the
+rest. It is an id, not a credential.
+
+**What you wire.** Three routes, plus the discovery document, which now
+advertises `refresh_token`, `offline_access` and `revocation_endpoint`:
+
+```ts
+import { IdentityError } from '@quxkit/identity-kit';
+
+// POST /oidc/token   (application/x-www-form-urlencoded; both grants)
+async function token(form: URLSearchParams) {
+  try {
+    const t = await issuer.token({
+      grantType: form.get('grant_type') ?? '',
+      clientId: form.get('client_id') ?? '',
+      clientSecret: form.get('client_secret') ?? undefined,
+      code: form.get('code') ?? undefined,
+      redirectUri: form.get('redirect_uri') ?? undefined,
+      codeVerifier: form.get('code_verifier') ?? undefined,
+      refreshToken: form.get('refresh_token') ?? undefined,
+      deviceLabel: form.get('device_label') ?? undefined,
+    });
+    return json(200, {
+      access_token: t.accessToken, token_type: t.tokenType, expires_in: t.expiresIn,
+      id_token: t.idToken, scope: t.scope,
+      ...(t.refreshToken ? { refresh_token: t.refreshToken } : {}),
+    }, { 'cache-control': 'no-store' });
+  } catch (e) {
+    // invalid_request / invalid_grant / invalid_client are OAuth's own codes.
+    if (!IdentityError.is(e)) throw e;
+    return json(e.code === 'invalid_client' ? 401 : 400, { error: e.code }, { 'cache-control': 'no-store' });
+  }
+}
+
+// POST /oidc/revoke  (RFC 7009: 200 whether or not the token was known)
+async function revoke(form: URLSearchParams, meta: SessionMeta) {
+  await issuer.revoke({
+    token: form.get('token') ?? '',
+    clientId: form.get('client_id') ?? '',
+    clientSecret: form.get('client_secret') ?? undefined,
+  }, meta);
+  return json(200, null);
+}
+
+// GET /oidc/userinfo  (Authorization: Bearer <access token>) -> issuer.userinfo(token)
+```
+
+Rate-limit the token and revoke routes by IP, as you would a login. Run
+`issuer.sweep()` on a schedule; it now also removes families that are revoked,
+expired or idle.
+
+**In the app.** Keep the refresh token in the platform's credential store and
+nowhere else: the **Keychain** on iOS and macOS
+(`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so it is not restored onto
+another device from a backup), the **Keystore** on Android (an
+`EncryptedSharedPreferences` file or a Keystore-wrapped key; exclude it from
+Auto Backup). Not in `UserDefaults` / `SharedPreferences`, not in a file, not in
+a log line, not in a crash report. Keep the access token in memory. Refresh from
+**one** place in the app (a single in-flight request that every caller awaits):
+two refreshes racing are forgiven inside the grace, but an app that refreshes
+from two code paths with an old token will sign its own user out, which is the
+reuse detection working. Replace the stored token as soon as a response arrives,
+before using the new access token. Treat `invalid_grant` as "signed out": clear
+the store and send the person through the browser.
 
 ## Rate limiting
 
@@ -390,8 +541,11 @@ is the account's audit trail. Every flow appends a row: `login_succeeded`
 cannot be read as a list of who has an account), `password_changed`,
 `password_reset`, `session_revoked` (`metadata.count`), `mfa_enrolled` /
 `mfa_removed`, `api_key_issued` / `api_key_revoked` (keyed by the key's
-`ownerId`), `passkey_registered` / `passkey_removed`, `magic_link_used`. Where a
-mutation is transactional the event commits with it.
+`ownerId`), `passkey_registered` / `passkey_removed`, `magic_link_used`,
+`device_session_revoked` (a phone or desktop app's sign-in ended;
+`metadata.count`, `metadata.reason`) and `refresh_token_reuse` (a retired refresh
+token came back and its family was revoked; `metadata.familyId`,
+`metadata.clientId`). Where a mutation is transactional the event commits with it.
 
 Pass the request's `SessionMeta` (`ipAddress`, `userAgent`) to have it on the
 row: `login(input, meta)`, `changePassword(..., meta)`, `resetPassword(...,
@@ -430,6 +584,9 @@ a property of the return types).
 | `invalid_code` | confirmTotpEnrolment | the TOTP code did not verify |
 | `totp_key_version` | MFA verify | secret sealed under a key version not in `totp.previousKeys` |
 | `invalid_config` | createMfa, createApiKeys | malformed key / prefix at construction |
+| `invalid_request` | provider authorize / token / registerClient | the request cannot be served as asked: unregistered `redirect_uri`, missing PKCE, unsupported `grant_type`, `allowRefresh` on a client or issuer that may not have it |
+| `invalid_grant` | provider token / refresh | the code or refresh token is unknown, spent, expired, revoked, or another client's (never says which) |
+| `invalid_client` | provider token / refresh / revoke / userinfo | client authentication failed, or the access token is unknown, expired or revoked |
 | `unknown_provider` | oidc begin/complete | no provider registered under that name |
 | `no_id_token` | oidc complete | the token response had no ID token |
 | `invalid_challenge` | passkeys registerFinish / authenticateFinish | challenge unknown / spent, expired, wrong purpose, or another user's (`reason`) |
@@ -621,17 +778,14 @@ security-events log (required by the core; keyed by a text `user_id` with no
 foreign key, because API-key events are keyed by an opaque owner — purge deletes
 them explicitly); `009_oidc_provider.sql` adds the issuer's tables; `010_realms.sql`
 adds `users.realm` and makes `(realm, email)` the unique key (required by the core;
-see [Realms](#realms)). Everything else cascades on delete; every file is re-runnable,
+see [Realms](#realms)); `011_apikey_roll.sql` adds `rolled_from`, `replaced_by` and
+`rolled_at` to `api_keys` (opt-in, with `003`); `012_oidc_refresh.sql` adds
+`oidc_clients.allow_refresh`, the refresh-token families and their tokens, and
+`oidc_access_tokens.family_id` (required with `009`). Everything else cascades on delete; every file is re-runnable,
 applied in order:
 
 ```sh
-for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening 006_events 007_passkeys 008_magic 009_oidc_provider 010_realms; do
-them explicitly); `011_apikey_roll.sql` adds `rolled_from`, `replaced_by` and
-`rolled_at` to `api_keys` (opt-in, with `003`). Everything else cascades on delete; every file is re-runnable,
-applied in order:
-
-```sh
-for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening 006_events 007_passkeys 008_magic 011_apikey_roll; do
+for f in 001_identity 002_mfa 003_apikeys 004_oidc 005_hardening 006_events 007_passkeys 008_magic 009_oidc_provider 010_realms 011_apikey_roll 012_oidc_refresh; do
   psql -v ON_ERROR_STOP=1 -f "node_modules/@quxkit/identity-kit/sql/$f.sql"
 done
 ```

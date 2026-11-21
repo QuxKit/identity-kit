@@ -12,6 +12,7 @@
 
 import { DEFAULT_EVENT_RETENTION_MS, recordEvent, sweepEvents } from './events.ts';
 import { realmOf } from './realm.ts';
+import { type FamilyRevocationReason, revokeUserRefreshFamilies } from './refresh-families.ts';
 import { issueToken, sha256 } from './tokens.ts';
 import type { IdentityConfig, ResolvedSession, SessionMeta, SessionSummary, SqlExecutor, UserId } from './types.ts';
 
@@ -178,6 +179,12 @@ export async function revokeSession(
  * Fires on password change, password reset and email change — any change to
  * *how* the account authenticates invalidates everything that authenticated
  * under the old rules. Returns how many were revoked.
+ *
+ * The issuer's refresh-token families (`identity-kit/provider`, a phone or
+ * desktop app's sign-in) go with them, ALL of them: `exceptTokenHash` spares a
+ * browser session, and no refresh family is that session. `reason` is recorded
+ * on those families; it does not change which sessions are revoked, and the
+ * returned count is of sessions only.
  */
 export async function revokeAllSessions(
   db: SqlExecutor,
@@ -185,6 +192,7 @@ export async function revokeAllSessions(
   exceptTokenHash?: string,
   meta: SessionMeta = {},
   now?: Date,
+  reason: FamilyRevocationReason = 'signed_out',
 ): Promise<number> {
   const rows = exceptTokenHash
     ? await db.query<{ token_hash: string }>(
@@ -203,6 +211,7 @@ export async function revokeAllSessions(
       metadata: { count: rows.length, keptOne: exceptTokenHash !== undefined },
     });
   }
+  await revokeUserRefreshFamilies(db, userId, reason, now, meta);
   return rows.length;
 }
 
