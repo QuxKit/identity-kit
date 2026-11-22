@@ -224,7 +224,11 @@ protects the token request, while PKCE protects the code, and the code is the pa
 that travels through a browser. `redirect_uri` is matched exactly, never by prefix —
 prefix matching is how an open redirect becomes an account takeover. Codes are
 hashed at rest, live 60 seconds, and are consumed by a guarded `UPDATE`, so two
-simultaneous redemptions cannot both win.
+simultaneous redemptions cannot both win. A code is redeemable only by the client
+it was issued to (RFC 6749 §4.1.3). The client, the `redirect_uri` and the PKCE
+verifier are all checked **before** the code is consumed, so a redemption that
+gets one of them wrong is refused and leaves the code usable by its owner:
+somebody who saw a code go by cannot cancel the sign-in by redeeming it badly.
 
 Signing keys live in the database, not an environment variable, so `rotateKey()`
 needs no deploy. A retired key stays published in JWKS until `sweep()` drops it,

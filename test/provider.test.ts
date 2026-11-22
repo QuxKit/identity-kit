@@ -10,6 +10,7 @@ import { after, describe, it } from 'node:test';
 
 import * as jose from 'jose';
 
+import { IdentityError } from '../src/errors.ts';
 import { createIdentity } from '../src/instance.ts';
 import { createOidcIssuer, type OidcIssuer } from '../src/provider.ts';
 import type { SqlExecutor } from '../src/types.ts';
@@ -250,6 +251,102 @@ describe('redeeming it', { skip }, () => {
         }),
       /client authentication/,
     );
+  });
+
+  const redeem = (code: string, v: string, over: Record<string, string> = {}) =>
+    issuer.token({
+      grantType: 'authorization_code',
+      code,
+      redirectUri: 'https://quxkit.test/api/auth/callback',
+      clientId: 'portal',
+      clientSecret: 'a-confidential-secret',
+      codeVerifier: v,
+      ...over,
+    });
+  const consumedAt = async (code: string): Promise<Date | null> => {
+    const rows = await db.query<{ consumed_at: Date | null }>(
+      `SELECT consumed_at FROM identity.oidc_codes WHERE code_hash = $1`,
+      [createHash('sha256').update(code).digest('base64url')],
+    );
+    return (rows[0] as { consumed_at: Date | null }).consumed_at;
+  };
+
+  it('refuses a client other than the one the code was issued to (#45)', async () => {
+    // Another registered client, holding the code, its verifier AND the
+    // redirect_uri: everything but being the client. RFC 6749 4.1.3. Before
+    // the fix it was handed an ID token whose audience was itself.
+    await issuer.registerClient({
+      clientId: 'sibling',
+      name: 'Another first-party app',
+      secret: 'the-sibling-secret',
+      redirectUris: ['https://quxkit.test/api/auth/callback'],
+      firstParty: true,
+    });
+    const v = verifier();
+    const code = await mint(v);
+    await assert.rejects(
+      () => redeem(code, v, { clientId: 'sibling', clientSecret: 'the-sibling-secret' }),
+      (e: unknown) => IdentityError.hasCode(e, 'invalid_grant') && /not issued to this client/.test(String(e)),
+    );
+    // A public client is refused the same way.
+    await issuer.registerClient({
+      clientId: 'sibling-public',
+      name: 'A public sibling',
+      redirectUris: ['https://quxkit.test/api/auth/callback'],
+      firstParty: true,
+    });
+    await assert.rejects(
+      () => redeem(code, v, { clientId: 'sibling-public', clientSecret: '' }),
+      /not issued to this client/,
+    );
+    // Nothing was minted for either of them.
+    const minted = await db.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM identity.oidc_access_tokens WHERE client_id IN ('sibling', 'sibling-public')`,
+    );
+    assert.equal((minted[0] as { n: number }).n, 0);
+    // The wrong client did not use the code up: its owner still signs in.
+    assert.equal(await consumedAt(code), null);
+    const tokens = await redeem(code, v);
+    const { payload } = await jose.jwtVerify(tokens.idToken, jose.createLocalJWKSet(await issuer.jwks()), {
+      issuer: ISSUER,
+      audience: 'portal',
+    });
+    assert.equal(payload.sub, userId);
+  });
+
+  it('is not used up by a wrong verifier or a wrong redirect_uri (#45)', async () => {
+    const v = verifier();
+    const code = await mint(v);
+    await assert.rejects(() => redeem(code, verifier()), /PKCE/);
+    await assert.rejects(() => redeem(code, ''), /PKCE/);
+    await assert.rejects(() => redeem(code, v, { redirectUri: 'https://quxkit.test/somewhere-else' }), /redirect_uri/);
+    assert.equal(await consumedAt(code), null, 'a wrong guess burned the code');
+    // The right answer still works, once.
+    await redeem(code, v);
+    assert.notEqual(await consumedAt(code), null);
+    await assert.rejects(() => redeem(code, v), /already used/);
+    // And a wrong guess after that learns nothing new.
+    await assert.rejects(() => redeem(code, verifier()), /already used/);
+  });
+
+  it('is single-use under concurrency: of many correct redemptions at once, one wins', async () => {
+    for (let round = 0; round < 5; round++) {
+      const v = verifier();
+      const code = await mint(v);
+      const settled = await Promise.allSettled(Array.from({ length: 12 }, () => redeem(code, v)));
+      const won = settled.filter((s) => s.status === 'fulfilled');
+      assert.equal(won.length, 1, `round ${round}: ${won.length} redemptions succeeded`);
+      for (const s of settled) {
+        if (s.status === 'rejected') assert.match(String((s.reason as Error).message), /already used/);
+      }
+    }
+    // One code, one access token, however many asked.
+    const v = verifier();
+    const code = await mint(v);
+    const before = await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM identity.oidc_access_tokens`);
+    await Promise.allSettled(Array.from({ length: 12 }, () => redeem(code, v)));
+    const after = await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM identity.oidc_access_tokens`);
+    assert.equal((after[0] as { n: number }).n - (before[0] as { n: number }).n, 1);
   });
 
   it('refuses an expired code', async () => {

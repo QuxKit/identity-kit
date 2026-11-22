@@ -310,7 +310,8 @@ export interface OidcIssuer {
   clients(): Promise<ClientRecord[]>;
   /** Mint a code for an already-authenticated user. */
   authorize(input: AuthorizeInput): Promise<AuthorizeResult>;
-  /** Redeem it. Single-use, PKCE-checked, bound to client and redirect_uri.
+  /** Redeem it. Single-use, PKCE-checked, bound to client and redirect_uri;
+   *  a redemption that fails one of those checks does not use the code up.
    *  With `grantType: 'refresh_token'` this is `refresh`. */
   token(input: TokenInput): Promise<TokenResult>;
   /**
@@ -803,31 +804,53 @@ export function createOidcIssuer(opts: ProviderOptions): OidcIssuer {
       const client = await authenticatedClient(input.clientId, input.clientSecret);
 
       const now = clock();
-      // Consume and read in ONE guarded UPDATE. A SELECT then an UPDATE lets two
-      // simultaneous redemptions both pass the check, which is the replay this
-      // is here to prevent.
-      const rows = await db.query<{
+      const codeHash = sha256(input.code ?? '');
+      // Look, decide, THEN consume. Every check that can fail for a caller who
+      // merely holds the code (its client, its redirect_uri, its PKCE verifier)
+      // runs against a plain read, so a wrong guess leaves the code as it was
+      // and the person it belongs to can still finish signing in. Somebody who
+      // intercepted a code but not the verifier could otherwise end every
+      // sign-in they could see, by redeeming it badly first.
+      const seen = await db.query<{
         client_id: string;
         user_id: string;
         redirect_uri: string;
         code_challenge: string;
         nonce: string | null;
         scope: string;
-        expires_at: Date;
       }>(
-        `UPDATE identity.oidc_codes SET consumed_at = $2
-          WHERE code_hash = $1 AND consumed_at IS NULL AND expires_at > $2
-          RETURNING client_id, user_id, redirect_uri, code_challenge, nonce, scope, expires_at`,
-        [sha256(input.code ?? ''), now],
+        `SELECT client_id, user_id, redirect_uri, code_challenge, nonce, scope
+           FROM identity.oidc_codes
+          WHERE code_hash = $1 AND consumed_at IS NULL AND expires_at > $2`,
+        [codeHash, now],
       );
-      const row = rows[0];
+      const row = seen[0];
       if (!row) refuse('invalid_grant', 'the code is unknown, already used, or expired');
       const found = row as NonNullable<typeof row>;
+      // RFC 6749 4.1.3: the code must have been issued to the client redeeming
+      // it. Refused and NOT consumed, for the reason a refresh token under the
+      // wrong client id is left alone: a client id is public, so the wrong one
+      // proves nothing about who is asking, and burning the code on it would
+      // hand anybody who saw a code a way to cancel the sign-in. The code stays
+      // single-use, sixty seconds long, and useless without its verifier.
+      if (found.client_id !== client.client_id) refuse('invalid_grant', 'the code was not issued to this client');
       if (found.redirect_uri !== input.redirectUri)
         refuse('invalid_grant', 'redirect_uri does not match the one the code was minted for');
       // PKCE: the verifier must hash to the challenge presented at authorize.
-      if (sha256(input.codeVerifier ?? '') !== found.code_challenge)
+      if (!sameSecret(sha256(input.codeVerifier ?? ''), found.code_challenge))
         refuse('invalid_grant', 'PKCE verification failed');
+
+      // Consume in ONE guarded UPDATE, which is what makes the code single-use:
+      // of two redemptions that both passed the checks above, one finds the row
+      // already consumed and is refused. The client is in the guard as well, so
+      // the binding does not rest on the read alone.
+      const consumed = await db.query<{ code_hash: string }>(
+        `UPDATE identity.oidc_codes SET consumed_at = $2
+          WHERE code_hash = $1 AND client_id = $3 AND consumed_at IS NULL AND expires_at > $2
+          RETURNING code_hash`,
+        [codeHash, now, client.client_id],
+      );
+      if (consumed.length === 0) refuse('invalid_grant', 'the code is unknown, already used, or expired');
 
       const users = await db.query<AccountRow>(
         `SELECT id, email, email_verified_at, name FROM identity.users WHERE id = $1`,
@@ -841,15 +864,9 @@ export function createOidcIssuer(opts: ProviderOptions): OidcIssuer {
 
       // A sign-in that renews: only on an issuer with refresh tokens on, only
       // for a first-party client an operator has given the flag, only when the
-      // authorization asked for it, and only for the client the code was
-      // minted for. Anything less takes the path below, which is unchanged.
-      if (
-        refresh &&
-        client.allow_refresh &&
-        client.first_party &&
-        found.client_id === client.client_id &&
-        found.scope.split(/\s+/).includes(OFFLINE_ACCESS)
-      ) {
+      // authorization asked for it. (The code is this client's: checked
+      // above.) Anything less takes the path below, which is unchanged.
+      if (refresh && client.allow_refresh && client.first_party && found.scope.split(/\s+/).includes(OFFLINE_ACCESS)) {
         const refreshToken = randomBytes(32).toString('base64url');
         const absoluteExpiresAt = new Date(now.getTime() + refresh.absoluteTtlMs);
         const idleExpiresAt = new Date(now.getTime() + refresh.idleTtlMs);

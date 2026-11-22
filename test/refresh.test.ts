@@ -274,8 +274,10 @@ describe('issuing one', { skip }, () => {
     assert.equal('refreshToken' in noIssuer, false);
   });
 
-  it('is not issued when the code was minted for another client', async () => {
-    // The code is for the portal (no flag); the phone (flag) redeems it.
+  it('is not issued when the code was minted for another client: nothing is', async () => {
+    // The code is for the portal (no flag); the phone (flag) redeems it, with
+    // the right verifier and the redirect_uri the two share. Before #45 that
+    // returned tokens without a refresh token. It is refused outright now.
     await issuer.registerClient({
       clientId: 'phone-shared',
       name: 'x',
@@ -291,14 +293,17 @@ describe('issuing one', { skip }, () => {
       scope: 'openid offline_access',
       codeChallenge: challengeFor(v),
     });
-    const tokens = await issuer.token({
-      grantType: 'authorization_code',
-      code,
-      redirectUri: PORTAL_CB,
-      clientId: 'phone-shared',
-      codeVerifier: v,
-    });
-    assert.equal('refreshToken' in tokens, false);
+    await assert.rejects(
+      () =>
+        issuer.token({
+          grantType: 'authorization_code',
+          code,
+          redirectUri: PORTAL_CB,
+          clientId: 'phone-shared',
+          codeVerifier: v,
+        }),
+      (e: unknown) => IdentityError.hasCode(e, 'invalid_grant'),
+    );
   });
 
   it('records what the app called the device, made safe to show back', async () => {

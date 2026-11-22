@@ -90,6 +90,18 @@ All notable changes to this project are documented here. The format follows
   instance's own prefix: before, a list showed every kind the owner held and a
   revoke through one instance could revoke another kind's key.
 
+- **An authorization code is bound to its client at redemption** (#45,
+  `identity-kit/provider`). `token()` consumed a code by its hash alone and
+  never compared the code's client with the client redeeming it, so another
+  registered client holding the code, its PKCE verifier and the redirect URI was
+  given an ID token whose audience was itself. It is now refused with
+  `invalid_grant` (RFC 6749 §4.1.3). The client, the `redirect_uri` and the PKCE
+  verifier are also checked **before** the code is consumed: a redemption that
+  gets one wrong no longer uses the code up, so its owner can still sign in.
+  The code is still single-use under concurrency (the consuming `UPDATE` is
+  guarded, and carries the client). A host whose two clients shared one code by
+  design was relying on the bug.
+
 ### Note for hosts calling `linkOrCreate` directly
 
 Its new fourth argument is optional, so existing calls compile unchanged — and
