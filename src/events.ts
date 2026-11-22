@@ -20,6 +20,12 @@ export type SecurityEventKind =
   | 'password_changed'
   | 'password_reset'
   | 'session_revoked'
+  /** provider: a refresh-token family (one sign-in on a phone or desktop app)
+   *  was revoked. `metadata.reason` says why; `metadata.count` how many. */
+  | 'device_session_revoked'
+  /** provider: a retired refresh token was presented again, and its family was
+   *  revoked for it. `metadata.familyId`, `metadata.clientId`. */
+  | 'refresh_token_reuse'
   | 'mfa_enrolled'
   | 'mfa_removed'
   | 'api_key_issued'
